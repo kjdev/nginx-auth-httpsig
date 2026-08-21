@@ -1,0 +1,23 @@
+# C/C++ intermediate
+*.o
+*.d
+*.so
+*.a
+
+# Editors / IDEs
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+.cache/
+compile_commands.json
+
+# Test/runtime artifacts
+tests/unit/test_runner
+tests/unit/test_runner_asan
+
+# OS
+.DS_Store
+Thumbs.db
