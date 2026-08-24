@@ -1,0 +1,49 @@
+ngx_addon_name=ngx_http_auth_httpsig_module
+
+# --- submodule: nxe-json ---
+# JSON parsing/serialisation (jansson wrapper, opaque nxe_json_t).
+nxe_json_dir="$ngx_addon_dir/nxe-json"
+
+if [ ! -f "$nxe_json_dir/config.ngx" ]; then
+    echo "$0: error: $nxe_json_dir/config.ngx not found." \
+         "Run: git submodule update --init --recursive" >&2
+    exit 1
+fi
+
+. "$nxe_json_dir/config.ngx"
+
+# --- submodule: nxe-jwx ---
+# JWKS parsing / detached signature verification (opaque nxe_jwx_*).
+# This module only verifies RFC 9421 signatures against Ed25519 keys
+# fetched from a JWKS; it never issues tokens, so HMAC support
+# (NXE_JWX_HAVE_HMAC) is left off.
+nxe_jwx_dir="$ngx_addon_dir/nxe-jwx"
+
+if [ ! -f "$nxe_jwx_dir/config.ngx" ]; then
+    echo "$0: error: $nxe_jwx_dir/config.ngx not found." \
+         "Run: git submodule update --init --recursive" >&2
+    exit 1
+fi
+
+. "$nxe_jwx_dir/config.ngx"
+
+# --- module definition ---
+#
+# Layer order (bottom to top):
+#   sfv -> base -> verify -> keys -> profile -> module entry
+ngx_module_type=HTTP
+ngx_module_name=ngx_http_auth_httpsig_module
+ngx_module_deps="$nxe_jwx_module_deps"
+ngx_module_incs="$nxe_jwx_module_incs"
+ngx_module_srcs="\
+  $nxe_json_module_srcs \
+  $nxe_jwx_module_srcs \
+  $ngx_addon_dir/src/ngx_auth_httpsig_sfv.c \
+  $ngx_addon_dir/src/ngx_auth_httpsig_base.c \
+  $ngx_addon_dir/src/ngx_auth_httpsig_verify.c \
+  $ngx_addon_dir/src/ngx_auth_httpsig_keys.c \
+  $ngx_addon_dir/src/ngx_auth_httpsig_profile.c \
+  $ngx_addon_dir/src/ngx_http_auth_httpsig_module.c"
+ngx_module_libs="$nxe_json_module_libs $nxe_jwx_module_libs"
+
+. auto/module
