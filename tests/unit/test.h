@@ -70,6 +70,8 @@ extern int test_failed;
             }                                                                   \
         } while (0)
 
-#define TEST_SUITE(suite)  void test_suite_ ## suite(ngx_log_t * log)
+#define TEST_SUITE(suite)                                                   \
+        void test_suite_ ## suite(ngx_log_t * log);                           \
+        void test_suite_ ## suite(ngx_log_t * log)
 
 #endif /* TEST_H */

@@ -9,8 +9,11 @@ LDFLAGS  = $(shell pkg-config --libs jansson)
 LDFLAGS += $(shell pkg-config --libs openssl 2>/dev/null || echo "-lssl -lcrypto")
 
 SRCS = test_main.c \
+       test_sfv.c \
+       test_sfv_httpwg.c \
        ngx_compat/ngx_stub.c \
-       ../../src/ngx_auth_httpsig_sfv.c
+       ../../src/ngx_auth_httpsig_sfv.c \
+       ../../nxe-json/src/nxe_json.c
 
 # Not compiled directly, but every SRCS file transitively includes one
 # of these; listing them as prerequisites forces a relink when only a
