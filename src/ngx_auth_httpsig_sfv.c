@@ -258,6 +258,7 @@ ngx_auth_httpsig_sfv_read_byte_sequence(ngx_auth_httpsig_sfv_ctx_t *ctx,
 {
     ngx_str_t encoded;
     const u_char *start;
+    ngx_uint_t i, pad;
 
     if (ctx->pos >= ctx->last || *ctx->pos != ':') {
         return ngx_auth_httpsig_sfv_fail(ctx, "invalid byte sequence");
@@ -277,6 +278,32 @@ ngx_auth_httpsig_sfv_read_byte_sequence(ngx_auth_httpsig_sfv_ctx_t *ctx,
     encoded.data = (u_char *) start;
     encoded.len = (size_t) (ctx->pos - start);
     ctx->pos++;
+
+    /*
+     * ngx_decode_base64() stops at the first '=' and ignores everything
+     * after it, so it accepts "=" padding that is not confined to the
+     * end of the content (e.g. leading or interior "="). RFC 8941
+     * requires "=" to appear only as trailing padding, so that has to be
+     * checked here before handing the content to ngx_decode_base64().
+     */
+
+    pad = 0;
+
+    for (i = 0; i < encoded.len; i++) {
+        if (encoded.data[i] == '=') {
+            pad++;
+            continue;
+        }
+
+        if (pad > 0) {
+            return ngx_auth_httpsig_sfv_fail(ctx,
+                                             "invalid byte sequence padding");
+        }
+    }
+
+    if (pad > 2) {
+        return ngx_auth_httpsig_sfv_fail(ctx, "invalid byte sequence padding");
+    }
 
     out->data = ngx_palloc(ctx->pool, ngx_base64_decoded_length(encoded.len));
     if (out->data == NULL) {
@@ -638,8 +665,6 @@ ngx_auth_httpsig_sfv_read_dictionary(ngx_auth_httpsig_sfv_ctx_t *ctx,
         return NGX_ERROR;
     }
 
-    ngx_auth_httpsig_sfv_skip_ows(ctx);
-
     while (ctx->pos < ctx->last) {
         rc = ngx_auth_httpsig_sfv_read_key(ctx, &key);
         if (rc != NGX_OK) {
@@ -733,8 +758,6 @@ ngx_auth_httpsig_sfv_read_list(ngx_auth_httpsig_sfv_ctx_t *ctx,
     if (members == NULL) {
         return NGX_ERROR;
     }
-
-    ngx_auth_httpsig_sfv_skip_ows(ctx);
 
     while (ctx->pos < ctx->last) {
         if (members->nelts >= NGX_AUTH_HTTPSIG_MAX_SFV_ITEMS) {
@@ -1120,12 +1143,14 @@ ngx_auth_httpsig_sfv_parse_dictionary(ngx_pool_t *pool, const ngx_str_t *input,
         return NGX_ERROR;
     }
 
+    ngx_auth_httpsig_sfv_skip_sp(&ctx);
+
     rc = ngx_auth_httpsig_sfv_read_dictionary(&ctx, dict);
     if (rc != NGX_OK) {
         return rc;
     }
 
-    ngx_auth_httpsig_sfv_skip_ows(&ctx);
+    ngx_auth_httpsig_sfv_skip_sp(&ctx);
 
     if (ctx.pos != ctx.last) {
         return ngx_auth_httpsig_sfv_fail(&ctx, "trailing data");
@@ -1166,12 +1191,14 @@ ngx_auth_httpsig_sfv_parse_list(ngx_pool_t *pool, const ngx_str_t *input,
         return NGX_ERROR;
     }
 
+    ngx_auth_httpsig_sfv_skip_sp(&ctx);
+
     rc = ngx_auth_httpsig_sfv_read_list(&ctx, list);
     if (rc != NGX_OK) {
         return rc;
     }
 
-    ngx_auth_httpsig_sfv_skip_ows(&ctx);
+    ngx_auth_httpsig_sfv_skip_sp(&ctx);
 
     if (ctx.pos != ctx.last) {
         return ngx_auth_httpsig_sfv_fail(&ctx, "trailing data");
@@ -1212,12 +1239,14 @@ ngx_auth_httpsig_sfv_parse_item(ngx_pool_t *pool, const ngx_str_t *input,
         return NGX_ERROR;
     }
 
+    ngx_auth_httpsig_sfv_skip_sp(&ctx);
+
     rc = ngx_auth_httpsig_sfv_read_item(&ctx, item);
     if (rc != NGX_OK) {
         return rc;
     }
 
-    ngx_auth_httpsig_sfv_skip_ows(&ctx);
+    ngx_auth_httpsig_sfv_skip_sp(&ctx);
 
     if (ctx.pos != ctx.last) {
         return ngx_auth_httpsig_sfv_fail(&ctx, "trailing data");
