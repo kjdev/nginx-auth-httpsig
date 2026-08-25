@@ -14,12 +14,14 @@ SRCS = test_main.c \
        test_base.c \
        test_keys.c \
        test_verify.c \
+       test_profile.c \
        test_crypto.c \
        ngx_compat/ngx_stub.c \
        ../../src/ngx_auth_httpsig_sfv.c \
        ../../src/ngx_auth_httpsig_base.c \
        ../../src/ngx_auth_httpsig_keys.c \
        ../../src/ngx_auth_httpsig_verify.c \
+       ../../src/ngx_auth_httpsig_profile.c \
        ../../nxe-json/src/nxe_json.c \
        ../../nxe-jwx/src/nxe_jwx_jwks.c \
        ../../nxe-jwx/src/nxe_jwx_jws.c \
@@ -38,6 +40,7 @@ HDRS = test.h \
        ../../src/ngx_auth_httpsig_base.h \
        ../../src/ngx_auth_httpsig_keys.h \
        ../../src/ngx_auth_httpsig_verify.h \
+       ../../src/ngx_auth_httpsig_profile.h \
        ../../nxe-json/src/nxe_json.h \
        ../../nxe-jwx/src/nxe_jwx.h \
        ../../nxe-jwx/src/nxe_jwx_jwks.h \
