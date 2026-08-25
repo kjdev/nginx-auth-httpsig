@@ -8,6 +8,7 @@
 #include <ngx_http.h>
 
 #include "ngx_auth_httpsig_base.h"
+#include "ngx_auth_httpsig_cache.h"
 #include "ngx_auth_httpsig_directory.h"
 #include "ngx_auth_httpsig_keys.h"
 #include "ngx_auth_httpsig_profile.h"
@@ -85,6 +86,8 @@ static char *ngx_http_auth_httpsig_set_alg(ngx_conf_t *cf,
 static char *ngx_http_auth_httpsig_set_trusted_agent(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+static char *ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static void ngx_http_auth_httpsig_cleanup_keys(void *data);
 
@@ -199,6 +202,13 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       ngx_conf_set_sec_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_auth_httpsig_loc_conf_t, directory.cache_max_ttl),
+      NULL },
+
+    { ngx_string("auth_httpsig_key_cache_zone"),
+      NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
+      ngx_http_auth_httpsig_set_key_cache_zone,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
       NULL },
 
     ngx_null_command
@@ -752,6 +762,78 @@ ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
     }
 
     lcf->directory.request_uri = value[1];
+
+    return NGX_CONF_OK;
+}
+
+
+/*
+ * "<name>:<size>" follows the same syntax and 8-page floor as
+ * limit_req_zone's "zone=" parameter; zone-name collisions across
+ * "auth_httpsig_key_cache_zone" and other modules' shared-memory zones
+ * are already caught by ngx_shared_memory_add(), so no separate check is
+ * needed here.
+ */
+static char *
+ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_http_auth_httpsig_main_conf_t *mcf = conf;
+    u_char *p;
+    ssize_t size;
+    ngx_str_t *value, name, s;
+    ngx_shm_zone_t *shm_zone;
+
+    if (mcf->shm_zone) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    p = (u_char *) ngx_strchr(value[1].data, ':');
+    if (p == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: invalid zone size \"%V\"",
+                           &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    name.data = value[1].data;
+    name.len = p - name.data;
+
+    s.data = p + 1;
+    s.len = value[1].data + value[1].len - s.data;
+
+    size = ngx_parse_size(&s);
+    if (size == NGX_ERROR) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: invalid zone size \"%V\"",
+                           &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    if (size < (ssize_t) (8 * ngx_pagesize)) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: zone \"%V\" is too small",
+                           &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    shm_zone = ngx_shared_memory_add(cf, &name, size,
+                                     &ngx_http_auth_httpsig_module);
+    if (shm_zone == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    shm_zone->init = ngx_auth_httpsig_cache_init_zone;
+
+    shm_zone->data = ngx_pcalloc(cf->pool,
+                                 sizeof(ngx_auth_httpsig_cache_ctx_t));
+    if (shm_zone->data == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    mcf->shm_zone = shm_zone;
 
     return NGX_CONF_OK;
 }
