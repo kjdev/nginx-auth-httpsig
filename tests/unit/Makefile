@@ -12,21 +12,37 @@ SRCS = test_main.c \
        test_sfv.c \
        test_sfv_httpwg.c \
        test_base.c \
+       test_keys.c \
+       test_verify.c \
+       test_crypto.c \
        ngx_compat/ngx_stub.c \
        ../../src/ngx_auth_httpsig_sfv.c \
        ../../src/ngx_auth_httpsig_base.c \
-       ../../nxe-json/src/nxe_json.c
+       ../../src/ngx_auth_httpsig_keys.c \
+       ../../src/ngx_auth_httpsig_verify.c \
+       ../../nxe-json/src/nxe_json.c \
+       ../../nxe-jwx/src/nxe_jwx_jwks.c \
+       ../../nxe-jwx/src/nxe_jwx_jws.c \
+       ../../nxe-jwx/src/nxe_jwx_decode.c \
+       ../../nxe-jwx/src/nxe_jwx_thumbprint.c
 
 # Not compiled directly, but every SRCS file transitively includes one
 # of these; listing them as prerequisites forces a relink when only a
 # header changes (SRCS timestamps alone would otherwise look current).
 HDRS = test.h \
+       test_crypto.h \
        ngx_compat/ngx_config.h \
        ngx_compat/ngx_core.h \
        ngx_compat/ngx_stub.h \
        ../../src/ngx_auth_httpsig_sfv.h \
        ../../src/ngx_auth_httpsig_base.h \
-       ../../nxe-json/src/nxe_json.h
+       ../../src/ngx_auth_httpsig_keys.h \
+       ../../src/ngx_auth_httpsig_verify.h \
+       ../../nxe-json/src/nxe_json.h \
+       ../../nxe-jwx/src/nxe_jwx.h \
+       ../../nxe-jwx/src/nxe_jwx_jwks.h \
+       ../../nxe-jwx/src/nxe_jwx_jws.h \
+       ../../nxe-jwx/src/nxe_jwx_internal.h
 
 test_runner: $(SRCS) $(HDRS)
 	$(CC) $(CFLAGS) -o $@ $(SRCS) $(LDFLAGS)
