@@ -335,7 +335,7 @@ ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
         {
             dst[n++] = (u_char)
                        ((ngx_auth_httpsig_base_hex_val(value_raw.data[i + 1]) <<
-            4)
+                         4)
                         | ngx_auth_httpsig_base_hex_val(value_raw.data[i + 2]));
             i += 2;
 
