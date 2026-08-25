@@ -8,6 +8,7 @@
 #include <ngx_http.h>
 
 #include "ngx_auth_httpsig_base.h"
+#include "ngx_auth_httpsig_directory.h"
 #include "ngx_auth_httpsig_keys.h"
 #include "ngx_auth_httpsig_profile.h"
 #include "ngx_auth_httpsig_verify.h"
@@ -31,25 +32,46 @@ typedef struct {
 } ngx_http_auth_httpsig_profile_conf_t;
 
 typedef struct {
-    ngx_uint_t                            mode;
-    ngx_http_auth_httpsig_jwks_conf_t     jwks;
-    ngx_http_auth_httpsig_profile_conf_t  profile;
+    ngx_array_t *trusted_agents; /* ngx_str_t normalized.
+                                  * NULL = undeclared, nelts == 0 = explicit
+                                  * "off". */
+    ngx_str_t    request_uri;
+    size_t       max_size;
+    time_t       cache_min_ttl;
+    time_t       cache_max_ttl;
+    ngx_flag_t   enabled;        /* derived at merge */
+} ngx_http_auth_httpsig_directory_conf_t;
+
+typedef struct {
+    ngx_uint_t                              mode;
+    ngx_http_auth_httpsig_jwks_conf_t       jwks;
+    ngx_http_auth_httpsig_profile_conf_t    profile;
+    ngx_http_auth_httpsig_directory_conf_t  directory;
 } ngx_http_auth_httpsig_loc_conf_t;
+
+typedef struct {
+    ngx_shm_zone_t *shm_zone;
+    ngx_flag_t      dynamic; /* true if the dynamic key directory is
+                              * enabled anywhere in the whole config */
+} ngx_http_auth_httpsig_main_conf_t;
 
 /* done == 1 means "already evaluated this request" (memoizes evaluation
  * across the get_handler calls of the $httpsig_* variables); keyid/agent
  * are only ever set from the RESULT_OK branch of
  * ngx_http_auth_httpsig_evaluate(), so a failed verification always
- * leaves them empty. */
+ * leaves them empty. directory_host is set by the dynamic key-directory
+ * phase handler, not by evaluate(). */
 typedef struct {
     unsigned                   done:1;
     ngx_auth_httpsig_result_t  result;
     ngx_str_t                  keyid;
     ngx_str_t                  agent;
+    ngx_str_t                  directory_host;
 } ngx_http_auth_httpsig_ctx_t;
 
 
 static ngx_int_t ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf);
+static void *ngx_http_auth_httpsig_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf,
     void *parent, void *child);
@@ -60,6 +82,10 @@ static char *ngx_http_auth_httpsig_set_profile(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_alg(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
+static char *ngx_http_auth_httpsig_set_trusted_agent(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+static char *ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
 static void ngx_http_auth_httpsig_cleanup_keys(void *data);
 
 static ngx_int_t ngx_http_auth_httpsig_variable_verified(
@@ -67,6 +93,8 @@ static ngx_int_t ngx_http_auth_httpsig_variable_verified(
 static ngx_int_t ngx_http_auth_httpsig_variable_keyid(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_auth_httpsig_variable_agent(
+    ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_auth_httpsig_variable_directory_host(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 
 static ngx_int_t ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
@@ -133,16 +161,56 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       offsetof(ngx_http_auth_httpsig_loc_conf_t, profile.max_skew),
       NULL },
 
+    { ngx_string("auth_httpsig_trusted_agent"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_1MORE,
+      ngx_http_auth_httpsig_set_trusted_agent,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("auth_httpsig_key_directory_request"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_http_auth_httpsig_set_key_directory_request,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("auth_httpsig_key_directory_max_size"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, directory.max_size),
+      NULL },
+
+    { ngx_string("auth_httpsig_key_cache_min_ttl"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_sec_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, directory.cache_min_ttl),
+      NULL },
+
+    { ngx_string("auth_httpsig_key_cache_max_ttl"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_sec_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, directory.cache_max_ttl),
+      NULL },
+
     ngx_null_command
 };
 
 
 static ngx_http_module_t ngx_http_auth_httpsig_module_ctx = {
-    ngx_http_auth_httpsig_add_variables,   /* preconfiguration */
-    NULL,                                  /* postconfiguration */
+    ngx_http_auth_httpsig_add_variables,    /* preconfiguration */
+    NULL,                                   /* postconfiguration */
 
-    NULL,                                  /* create main configuration */
-    NULL,                                  /* init main configuration */
+    ngx_http_auth_httpsig_create_main_conf, /* create main configuration */
+    NULL,                                   /* init main configuration */
 
     NULL,                                  /* create server configuration */
     NULL,                                  /* merge server configuration */
@@ -182,6 +250,10 @@ static ngx_http_variable_t ngx_http_auth_httpsig_variables[] = {
       ngx_http_auth_httpsig_variable_agent,
       0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
 
+    { ngx_string("httpsig_directory_host"), NULL,
+      ngx_http_auth_httpsig_variable_directory_host,
+      0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
+
     ngx_http_null_variable
 };
 
@@ -206,6 +278,20 @@ ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf)
 
 
 static void *
+ngx_http_auth_httpsig_create_main_conf(ngx_conf_t *cf)
+{
+    ngx_http_auth_httpsig_main_conf_t *conf;
+
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_auth_httpsig_main_conf_t));
+    if (conf == NULL) {
+        return NULL;
+    }
+
+    return conf;
+}
+
+
+static void *
 ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
 {
     ngx_http_auth_httpsig_loc_conf_t *conf;
@@ -220,6 +306,13 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
     conf->profile.expires_max = NGX_CONF_UNSET;
     conf->profile.max_skew = NGX_CONF_UNSET;
 
+    /* directory.trusted_agents is deliberately left NULL (not
+     * NGX_CONF_UNSET_PTR): NULL/empty/non-empty are three distinct
+     * states (undeclared/explicit "off"/real list), not one. */
+    conf->directory.max_size = NGX_CONF_UNSET_SIZE;
+    conf->directory.cache_min_ttl = NGX_CONF_UNSET;
+    conf->directory.cache_max_ttl = NGX_CONF_UNSET;
+
     return conf;
 }
 
@@ -229,7 +322,9 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
     ngx_http_auth_httpsig_loc_conf_t *prev = parent;
     ngx_http_auth_httpsig_loc_conf_t *conf = child;
+    ngx_http_auth_httpsig_main_conf_t *mcf;
     ngx_str_t default_name = ngx_string("web-bot-auth");
+    ngx_flag_t declared;
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode,
                               NGX_HTTP_AUTH_HTTPSIG_MODE_OFF);
@@ -265,8 +360,84 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                              prev->profile.max_skew,
                              conf->profile.def->max_skew);
 
+    /* Override, not accumulate: a block that declares its own
+     * "auth_httpsig_trusted_agent" (including "off") discards whatever
+     * the parent inherited, rather than adding to it (ADR 0013). */
+    declared = (conf->directory.trusted_agents != NULL);
+
+    if (!declared) {
+        conf->directory.trusted_agents = prev->directory.trusted_agents;
+    }
+
+    if (conf->directory.request_uri.len == 0) {
+        conf->directory.request_uri = prev->directory.request_uri;
+    }
+
+    ngx_conf_merge_size_value(conf->directory.max_size,
+                              prev->directory.max_size, 65536);
+    ngx_conf_merge_sec_value(conf->directory.cache_min_ttl,
+                             prev->directory.cache_min_ttl, 300);
+    ngx_conf_merge_sec_value(conf->directory.cache_max_ttl,
+                             prev->directory.cache_max_ttl, 3600);
+
+    conf->directory.enabled = (conf->directory.trusted_agents != NULL
+                               && conf->directory.trusted_agents->nelts > 0
+                               && conf->directory.request_uri.len > 0);
+
+    if (conf->directory.cache_min_ttl == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: \"auth_httpsig_key_cache_min_ttl\" "
+                           "must not be 0");
+        return NGX_CONF_ERROR;
+    }
+
+    if (conf->directory.cache_max_ttl < conf->directory.cache_min_ttl) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: \"auth_httpsig_key_cache_max_ttl\" "
+                           "must not be less than "
+                           "\"auth_httpsig_key_cache_min_ttl\"");
+        return NGX_CONF_ERROR;
+    }
+
+    if (conf->directory.max_size > NGX_AUTH_HTTPSIG_MAX_JWKS_SIZE) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: \"auth_httpsig_key_directory_max_size\" "
+                           "must not exceed %d bytes",
+                           NGX_AUTH_HTTPSIG_MAX_JWKS_SIZE);
+        return NGX_CONF_ERROR;
+    }
+
+    /* Gate on "declared", not on the merged value: a config that puts
+     * "auth_httpsig_trusted_agent" on the server block and
+     * "auth_httpsig_key_directory_request" only on some of its
+     * locations is valid (the other locations inherit both), and must
+     * not be rejected just because this specific block's merged
+     * request_uri came from the parent. */
+    if (declared && conf->directory.trusted_agents->nelts > 0) {
+        if (conf->directory.request_uri.len == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "auth_httpsig: \"auth_httpsig_trusted_agent\" is "
+                               "set but no "
+                               "\"auth_httpsig_key_directory_request\" is "
+                               "configured");
+            return NGX_CONF_ERROR;
+        }
+
+        mcf = ngx_http_conf_get_module_main_conf(cf,
+                                                 ngx_http_auth_httpsig_module);
+
+        if (mcf->shm_zone == NULL) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "auth_httpsig: \"auth_httpsig_trusted_agent\" is "
+                               "set but no \"auth_httpsig_key_cache_zone\" is "
+                               "configured");
+            return NGX_CONF_ERROR;
+        }
+    }
+
     if (conf->mode != NGX_HTTP_AUTH_HTTPSIG_MODE_OFF
-        && conf->jwks.keys == NULL)
+        && conf->jwks.keys == NULL
+        && !conf->directory.enabled)
     {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "auth_httpsig: \"auth_httpsig_mode\" is not \"off\" but no "
@@ -440,6 +611,147 @@ ngx_http_auth_httpsig_set_alg(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     lcf->profile.algs = algs;
+
+    return NGX_CONF_OK;
+}
+
+
+/*
+ * "off" is a single-argument form that allocates an empty array to mean
+ * "explicitly discard whatever the parent block would otherwise
+ * inherit" (ADR 0013); it must not be mixed with hostnames, either as
+ * arguments to one invocation or across repeated invocations in the
+ * same block, since either combination as a boolean is deceptive: a
+ * host list with an "off" in it either allowed those hosts (surprising)
+ * or ignored them (silently, which is worse).
+ *
+ * Repeated invocations with real hostnames accumulate (push) rather
+ * than erroring, matching directives like "allow"/"deny".
+ */
+static char *
+ngx_http_auth_httpsig_set_trusted_agent(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_http_auth_httpsig_loc_conf_t *lcf = conf;
+    ngx_http_auth_httpsig_main_conf_t *mcf;
+    ngx_str_t *value, *entry, normalized;
+    ngx_auth_httpsig_host_reason_t reason;
+    ngx_uint_t i;
+    ngx_flag_t is_off;
+
+    value = cf->args->elts;
+
+    is_off = (cf->args->nelts == 2
+              && value[1].len == sizeof("off") - 1
+              && ngx_strncasecmp(value[1].data, (u_char *) "off",
+                                 sizeof("off") - 1) == 0);
+
+    if (!is_off) {
+        for (i = 1; i < cf->args->nelts; i++) {
+            if (value[i].len == sizeof("off") - 1
+                && ngx_strncasecmp(value[i].data, (u_char *) "off",
+                                   sizeof("off") - 1) == 0)
+            {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "auth_httpsig: \"off\" cannot be "
+                                   "combined with hostnames in "
+                                   "\"auth_httpsig_trusted_agent\"");
+                return NGX_CONF_ERROR;
+            }
+        }
+    }
+
+    if (lcf->directory.trusted_agents != NULL
+        && (is_off || lcf->directory.trusted_agents->nelts == 0))
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: \"auth_httpsig_trusted_agent off\" "
+                           "cannot be combined with other "
+                           "\"auth_httpsig_trusted_agent\" directives in "
+                           "the same block");
+        return NGX_CONF_ERROR;
+    }
+
+    if (lcf->directory.trusted_agents == NULL) {
+        lcf->directory.trusted_agents = ngx_array_create(cf->pool,
+                                                         is_off ? 0
+                                                    : cf->args->nelts - 1,
+                                                         sizeof(ngx_str_t));
+        if (lcf->directory.trusted_agents == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    if (is_off) {
+        return NGX_CONF_OK;
+    }
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        if (ngx_auth_httpsig_directory_normalize_host(cf->pool, &value[i],
+                                                      &normalized, &reason)
+            != NGX_OK)
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "auth_httpsig: invalid host \"%V\" in "
+                               "\"auth_httpsig_trusted_agent\"", &value[i]);
+            return NGX_CONF_ERROR;
+        }
+
+        entry = ngx_array_push(lcf->directory.trusted_agents);
+        if (entry == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        *entry = normalized;
+    }
+
+    mcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_httpsig_module);
+    mcf->dynamic = 1;
+
+    return NGX_CONF_OK;
+}
+
+
+/*
+ * Rejecting "$" is a structural guarantee, not a style preference:
+ * unlike auth_httpsig_jwks_file (a startup-time path) or nginx-auth-jwt
+ * (which does allow "$var" in its equivalent directive), this URI is
+ * used at request time, so a variable here would be the one path by
+ * which client-influenced data could reach the internal fetch location.
+ * The host is instead threaded through separately, via
+ * $httpsig_directory_host.
+ */
+static char *
+ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf)
+{
+    ngx_http_auth_httpsig_loc_conf_t *lcf = conf;
+    ngx_str_t *value;
+    ngx_uint_t i;
+
+    if (lcf->directory.request_uri.len) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    if (value[1].len == 0 || value[1].data[0] != '/') {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: \"auth_httpsig_key_directory_request\" "
+                           "must start with \"/\"");
+        return NGX_CONF_ERROR;
+    }
+
+    for (i = 0; i < value[1].len; i++) {
+        if (value[1].data[i] == '$') {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "auth_httpsig: \"auth_httpsig_key_directory_request\" "
+                               "must not contain variables");
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    lcf->directory.request_uri = value[1];
 
     return NGX_CONF_OK;
 }
@@ -789,6 +1101,41 @@ ngx_http_auth_httpsig_variable_agent(ngx_http_request_t *r,
 
     v->data = ctx->agent.data;
     v->len = ctx->agent.len;
+    v->valid = 1;
+    v->no_cacheable = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+
+/*
+ * Reads r->main's ctx, not r's: a subrequest shares its parent's
+ * r->variables array (ngx_http_subrequest() sets sr->variables =
+ * r->variables) but gets a fresh, pcalloc'd sr->ctx, so the internal
+ * fetch location's proxy_set_header/proxy_pass -- which evaluate this
+ * variable on the subrequest -- would otherwise always see it unset.
+ *
+ * Deliberately does not call ngx_http_auth_httpsig_evaluate(): doing so
+ * would run signature verification while a directory-fetch subrequest
+ * is in flight, breaking the lazy-evaluation premise that evaluate()
+ * runs at most once per (main) request.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_variable_directory_host(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_auth_httpsig_ctx_t *ctx;
+
+    ctx = ngx_http_get_module_ctx(r->main, ngx_http_auth_httpsig_module);
+
+    if (ctx == NULL || ctx->directory_host.len == 0) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    v->data = ctx->directory_host.data;
+    v->len = ctx->directory_host.len;
     v->valid = 1;
     v->no_cacheable = 1;
     v->not_found = 0;
