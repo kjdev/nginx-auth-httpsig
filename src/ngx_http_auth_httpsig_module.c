@@ -72,6 +72,7 @@ typedef struct {
 
 
 static ngx_int_t ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf);
+static ngx_int_t ngx_http_auth_httpsig_init(ngx_conf_t *cf);
 static void *ngx_http_auth_httpsig_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf,
@@ -100,6 +101,8 @@ static ngx_int_t ngx_http_auth_httpsig_variable_agent(
 static ngx_int_t ngx_http_auth_httpsig_variable_directory_host(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 
+static ngx_int_t ngx_http_auth_httpsig_directory_handler(
+    ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_http_auth_httpsig_ctx_t **out);
 static ngx_table_elt_t *ngx_http_auth_httpsig_find_header(
@@ -217,7 +220,7 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
 
 static ngx_http_module_t ngx_http_auth_httpsig_module_ctx = {
     ngx_http_auth_httpsig_add_variables,    /* preconfiguration */
-    NULL,                                   /* postconfiguration */
+    ngx_http_auth_httpsig_init,             /* postconfiguration */
 
     ngx_http_auth_httpsig_create_main_conf, /* create main configuration */
     NULL,                                   /* init main configuration */
@@ -282,6 +285,41 @@ ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf)
         var->get_handler = v->get_handler;
         var->data = v->data;
     }
+
+    return NGX_OK;
+}
+
+
+/*
+ * nginx's phase handlers are a per-cycle array shared across every
+ * location, so this cannot be scoped to only the locations that declare
+ * "auth_httpsig_trusted_agent". Instead, the whole config is checked once
+ * here: if no location anywhere enabled dynamic key fetching, the handler
+ * is never registered and static-JWKS-only configs pay nothing (ADR
+ * 0013). Once registered, every request pays one indirect call plus the
+ * r != r->main / directory.enabled checks inside the handler.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_init(ngx_conf_t *cf)
+{
+    ngx_http_auth_httpsig_main_conf_t *mcf;
+    ngx_http_core_main_conf_t *cmcf;
+    ngx_http_handler_pt *h;
+
+    mcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_httpsig_module);
+
+    if (!mcf->dynamic) {
+        return NGX_OK;
+    }
+
+    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
+
+    h = ngx_array_push(&cmcf->phases[NGX_HTTP_PREACCESS_PHASE].handlers);
+    if (h == NULL) {
+        return NGX_ERROR;
+    }
+
+    *h = ngx_http_auth_httpsig_directory_handler;
 
     return NGX_OK;
 }
@@ -1033,6 +1071,33 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
  * errors also fail open rather than aborting the request: this module
  * verifies an optional signature, it never causes a 500.
  */
+/*
+ * Guards only, at this stage: dispatching the directory-fetch subrequest
+ * is later work. r != r->main is checked here (not deferred to that
+ * later work) because it must hold before a subrequest is ever issued,
+ * or the fetch subrequest would recurse into this same handler. No ctx is
+ * created here -- doing so would make ngx_http_auth_httpsig_evaluate()
+ * see an already-"done" ctx and skip verification entirely.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
+{
+    ngx_http_auth_httpsig_loc_conf_t *lcf;
+
+    if (r != r->main) {
+        return NGX_DECLINED;
+    }
+
+    lcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_httpsig_module);
+
+    if (!lcf->directory.enabled) {
+        return NGX_DECLINED;
+    }
+
+    return NGX_DECLINED;
+}
+
+
 static ngx_int_t
 ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_http_auth_httpsig_ctx_t **out)
