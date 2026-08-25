@@ -11,8 +11,10 @@ LDFLAGS += $(shell pkg-config --libs openssl 2>/dev/null || echo "-lssl -lcrypto
 SRCS = test_main.c \
        test_sfv.c \
        test_sfv_httpwg.c \
+       test_base.c \
        ngx_compat/ngx_stub.c \
        ../../src/ngx_auth_httpsig_sfv.c \
+       ../../src/ngx_auth_httpsig_base.c \
        ../../nxe-json/src/nxe_json.c
 
 # Not compiled directly, but every SRCS file transitively includes one
@@ -23,6 +25,7 @@ HDRS = test.h \
        ngx_compat/ngx_core.h \
        ngx_compat/ngx_stub.h \
        ../../src/ngx_auth_httpsig_sfv.h \
+       ../../src/ngx_auth_httpsig_base.h \
        ../../nxe-json/src/nxe_json.h
 
 test_runner: $(SRCS) $(HDRS)
