@@ -27,7 +27,8 @@ static const ngx_auth_httpsig_profile_t ngx_auth_httpsig_profiles[] = {
         86400,
         60,
         ngx_string("ed25519"),
-        ngx_string("/.well-known/http-message-signatures-directory")
+        ngx_string("/.well-known/http-message-signatures-directory"),
+        ngx_string("application/http-message-signatures-directory+json")
     }
 
 };
@@ -59,8 +60,6 @@ static ngx_int_t ngx_auth_httpsig_profile_extract_params(
     const ngx_array_t *params, ngx_auth_httpsig_signature_t *sig);
 static ngx_uint_t ngx_auth_httpsig_profile_covered_components(
     const ngx_array_t *items);
-static void ngx_auth_httpsig_profile_extract_agent(ngx_pool_t *pool,
-    const ngx_str_t *raw, ngx_str_t *out);
 
 
 const ngx_auth_httpsig_profile_t *
@@ -319,8 +318,8 @@ ngx_auth_httpsig_profile_verify(ngx_pool_t *pool,
 
     /* Step 15: only on success, extract the Signature-Agent host. */
     if (agent_present) {
-        ngx_auth_httpsig_profile_extract_agent(pool, &agent_raw,
-                                               &sig->agent_host);
+        ngx_auth_httpsig_profile_agent_host(pool, &agent_raw,
+                                            &sig->agent_host);
     }
 
     return NGX_OK;
@@ -470,17 +469,15 @@ ngx_auth_httpsig_profile_covered_components(const ngx_array_t *items)
 
 
 /*
- * Extracts the lowercased host portion of a Signature-Agent value,
- * leaving `out` empty unless the value is an https URL. Signature-Agent
- * is carried as a bare sf-string in some web-bot-auth draft revisions
- * and as an Item in others; parsing it as an Item covers both, since a
- * bare quoted string also parses as an Item. Either way, the
- * reconstructed signature base string uses the raw field value
- * unchanged, so this ambiguity never affects verification -- only
- * $httpsig_agent extraction.
+ * Signature-Agent is carried as a bare sf-string in some web-bot-auth
+ * draft revisions and as an Item in others; parsing it as an Item
+ * covers both, since a bare quoted string also parses as an Item.
+ * Either way, the reconstructed signature base string uses the raw
+ * field value unchanged, so this ambiguity never affects verification
+ * -- only $httpsig_agent / key-directory host extraction.
  */
-static void
-ngx_auth_httpsig_profile_extract_agent(ngx_pool_t *pool,
+void
+ngx_auth_httpsig_profile_agent_host(ngx_pool_t *pool,
     const ngx_str_t *raw, ngx_str_t *out)
 {
     ngx_auth_httpsig_sfv_item_t *item;

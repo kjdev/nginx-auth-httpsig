@@ -57,8 +57,11 @@ typedef struct {
     time_t      expires_max;
     time_t      max_skew;
     ngx_str_t   alg;                   /* accepted "alg" parameter value */
-    ngx_str_t   directory_path;        /* not read yet; for a future
-                                        * dynamic key-directory fetch */
+    ngx_str_t   directory_path;        /* key-directory well-known path,
+                                        * for a dynamic fetch */
+    ngx_str_t   directory_media_type;  /* accepted key-directory response
+                                        * media type, besides
+                                        * application/json */
 } ngx_auth_httpsig_profile_t;
 
 /*
@@ -141,6 +144,16 @@ ngx_int_t ngx_auth_httpsig_profile_match(
     const ngx_auth_httpsig_profile_t *profile,
     const ngx_auth_httpsig_signature_t *sig,
     ngx_auth_httpsig_result_t *result);
+
+/*
+ * Extracts the lowercased host portion of a raw Signature-Agent field
+ * value, leaving `out` empty unless the value is an https URL. Exposed
+ * so the key-directory fetch path can derive a host from an
+ * as-yet-unverified Signature-Agent value, before signature
+ * verification has run.
+ */
+void ngx_auth_httpsig_profile_agent_host(ngx_pool_t *pool,
+    const ngx_str_t *raw, ngx_str_t *out);
 
 
 #endif /* NGX_AUTH_HTTPSIG_PROFILE_H */
