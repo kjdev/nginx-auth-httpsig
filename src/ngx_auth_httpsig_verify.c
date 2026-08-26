@@ -30,6 +30,8 @@ ngx_auth_httpsig_result_name(ngx_auth_httpsig_result_t result)
         return "expired";
     case NGX_AUTH_HTTPSIG_RESULT_PROFILE_MISMATCH:
         return "profile_mismatch";
+    case NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE:
+        return "key_unavailable";
     }
 
     return "unknown";
