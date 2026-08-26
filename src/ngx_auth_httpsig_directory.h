@@ -26,10 +26,16 @@ typedef enum {
     NGX_AUTH_HTTPSIG_HOST_INVALID_CHAR
 } ngx_auth_httpsig_host_reason_t;
 
-/* Why ngx_auth_httpsig_directory_check_response() rejected a
- * key-directory response; meaningful only when that function returns
- * NGX_DECLINED. Doubles as the failure classification for a future
- * $httpsig_error (WP6). */
+/* Why the key directory failed to yield usable keys for this request;
+ * meaningful only alongside ctx->keys_unavailable ==
+ * NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE. The first block is the
+ * classification ngx_auth_httpsig_directory_check_response() returns
+ * (existing values, numbering unchanged); the second block is filled in
+ * directly by the HTTP layer for failures that never reach that
+ * function (allow-list miss, in-flight fetch elsewhere, cache-negative
+ * backoff, unparsable response body, or the subrequest itself failing).
+ * Backs $httpsig_error (WP6) via
+ * ngx_auth_httpsig_directory_reason_name(). */
 typedef enum {
     NGX_AUTH_HTTPSIG_FETCH_OK = 0,
     NGX_AUTH_HTTPSIG_FETCH_NOT_HTTPS,
@@ -37,7 +43,12 @@ typedef enum {
     NGX_AUTH_HTTPSIG_FETCH_STATUS,
     NGX_AUTH_HTTPSIG_FETCH_MEDIA_TYPE,
     NGX_AUTH_HTTPSIG_FETCH_TOO_LARGE,
-    NGX_AUTH_HTTPSIG_FETCH_EMPTY
+    NGX_AUTH_HTTPSIG_FETCH_EMPTY,
+    NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED,
+    NGX_AUTH_HTTPSIG_FETCH_BUSY,
+    NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE,
+    NGX_AUTH_HTTPSIG_FETCH_INVALID,
+    NGX_AUTH_HTTPSIG_FETCH_FAILED
 } ngx_auth_httpsig_fetch_reason_t;
 
 
@@ -119,6 +130,15 @@ ngx_int_t ngx_auth_httpsig_directory_check_response(const ngx_str_t *schema,
     ngx_uint_t status, const ngx_str_t *content_type,
     const ngx_str_t *media_type, size_t body_len, size_t max_size,
     ngx_auth_httpsig_fetch_reason_t *reason);
+
+/*
+ * Static string, safe to log or expose as $httpsig_error; never derived
+ * from a request. Returns the full "directory_*" token (e.g.
+ * "directory_not_allowed"), not a bare suffix, since the caller does
+ * not concatenate a prefix onto it.
+ */
+const char *ngx_auth_httpsig_directory_reason_name(
+    ngx_auth_httpsig_fetch_reason_t reason);
 
 
 #endif /* NGX_AUTH_HTTPSIG_DIRECTORY_H */

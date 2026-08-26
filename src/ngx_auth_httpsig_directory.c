@@ -372,6 +372,40 @@ ngx_auth_httpsig_directory_check_response(const ngx_str_t *schema,
 }
 
 
+const char *
+ngx_auth_httpsig_directory_reason_name(ngx_auth_httpsig_fetch_reason_t reason)
+{
+    switch (reason) {
+    case NGX_AUTH_HTTPSIG_FETCH_OK:
+        return "directory_ok";
+    case NGX_AUTH_HTTPSIG_FETCH_NOT_HTTPS:
+        return "directory_not_https";
+    case NGX_AUTH_HTTPSIG_FETCH_REDIRECT:
+        return "directory_redirect";
+    case NGX_AUTH_HTTPSIG_FETCH_STATUS:
+        return "directory_status";
+    case NGX_AUTH_HTTPSIG_FETCH_MEDIA_TYPE:
+        return "directory_media_type";
+    case NGX_AUTH_HTTPSIG_FETCH_TOO_LARGE:
+        return "directory_too_large";
+    case NGX_AUTH_HTTPSIG_FETCH_EMPTY:
+        return "directory_empty";
+    case NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED:
+        return "directory_not_allowed";
+    case NGX_AUTH_HTTPSIG_FETCH_BUSY:
+        return "directory_busy";
+    case NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE:
+        return "directory_unavailable";
+    case NGX_AUTH_HTTPSIG_FETCH_INVALID:
+        return "directory_invalid";
+    case NGX_AUTH_HTTPSIG_FETCH_FAILED:
+        return "directory_failed";
+    }
+
+    return "unknown";
+}
+
+
 static ngx_int_t
 ngx_auth_httpsig_directory_parse_directive(const ngx_str_t *token,
     const char *name, time_t *value)
