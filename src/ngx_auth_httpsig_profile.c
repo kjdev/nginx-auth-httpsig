@@ -554,6 +554,14 @@ ngx_auth_httpsig_profile_extract_agent(ngx_pool_t *pool,
         host_end = host_start;
 
         while (host_end < authority_end && *host_end != ':') {
+            if (!((*host_end >= 'a' && *host_end <= 'z')
+                  || (*host_end >= 'A' && *host_end <= 'Z')
+                  || (*host_end >= '0' && *host_end <= '9')
+                  || *host_end == '-' || *host_end == '.'))
+            {
+                return;
+            }
+
             host_end++;
         }
     }

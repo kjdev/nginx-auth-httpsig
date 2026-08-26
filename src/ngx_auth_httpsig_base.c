@@ -53,6 +53,13 @@ static u_char *ngx_auth_httpsig_base_find(u_char *start, u_char *end,
     u_char c);
 static ngx_flag_t ngx_auth_httpsig_base_is_hex(u_char c);
 static ngx_uint_t ngx_auth_httpsig_base_hex_val(u_char c);
+static ngx_flag_t ngx_auth_httpsig_base_qs_key_eq(u_char *raw,
+    u_char *raw_end, const ngx_str_t *target);
+static ngx_int_t ngx_auth_httpsig_base_qs_decode(ngx_pool_t *pool,
+    const ngx_str_t *raw, ngx_str_t *out);
+static ngx_flag_t ngx_auth_httpsig_base_qs_unreserved(u_char c);
+static ngx_int_t ngx_auth_httpsig_base_qs_encode(ngx_pool_t *pool,
+    const ngx_str_t *decoded, ngx_str_t *out);
 
 
 static ngx_int_t
@@ -235,10 +242,173 @@ ngx_auth_httpsig_base_hex_val(u_char c)
 
 
 /*
- * RFC 9421 section 2.2.8. Percent-decoding follows the first "&"/"="
- * delimited pair whose (byte-for-byte, still percent-encoded) name
- * matches the "name" parameter; there is no defined behavior for
- * repeated names, so the first match wins.
+ * Compares a raw (still percent/'+'-encoded) query-string key against an
+ * already-decoded target, decoding "raw" on the fly so no allocation is
+ * needed just to test equality.
+ */
+static ngx_flag_t
+ngx_auth_httpsig_base_qs_key_eq(u_char *raw, u_char *raw_end,
+    const ngx_str_t *target)
+{
+    u_char c;
+    size_t j;
+
+    j = 0;
+
+    while (raw < raw_end) {
+        if (*raw == '+') {
+            c = ' ';
+            raw++;
+
+        } else if (*raw == '%' && raw + 2 < raw_end
+                   && ngx_auth_httpsig_base_is_hex(raw[1])
+                   && ngx_auth_httpsig_base_is_hex(raw[2]))
+        {
+            c = (u_char) ((ngx_auth_httpsig_base_hex_val(raw[1]) << 4)
+                          | ngx_auth_httpsig_base_hex_val(raw[2]));
+            raw += 3;
+
+        } else {
+            c = *raw;
+            raw++;
+        }
+
+        if (j >= target->len || target->data[j] != c) {
+            return 0;
+        }
+
+        j++;
+    }
+
+    return j == target->len;
+}
+
+
+/*
+ * application/x-www-form-urlencoded parsing (WHATWG URL Standard):
+ * "+" decodes to space, "%XX" decodes to the encoded byte, anything else
+ * passes through unchanged.
+ */
+static ngx_int_t
+ngx_auth_httpsig_base_qs_decode(ngx_pool_t *pool, const ngx_str_t *raw,
+    ngx_str_t *out)
+{
+    u_char *dst;
+    ngx_uint_t i;
+    size_t n;
+
+    if (raw->len == 0) {
+        out->data = NULL;
+        out->len = 0;
+        return NGX_OK;
+    }
+
+    dst = ngx_pnalloc(pool, raw->len);
+    if (dst == NULL) {
+        return NGX_ERROR;
+    }
+
+    n = 0;
+
+    for (i = 0; i < raw->len; i++) {
+        if (raw->data[i] == '+') {
+            dst[n++] = ' ';
+
+        } else if (raw->data[i] == '%' && i + 2 < raw->len
+                   && ngx_auth_httpsig_base_is_hex(raw->data[i + 1])
+                   && ngx_auth_httpsig_base_is_hex(raw->data[i + 2]))
+        {
+            dst[n++] = (u_char)
+                       ((ngx_auth_httpsig_base_hex_val(raw->data[i + 1]) << 4)
+                        | ngx_auth_httpsig_base_hex_val(raw->data[i + 2]));
+            i += 2;
+
+        } else {
+            dst[n++] = raw->data[i];
+        }
+    }
+
+    out->data = dst;
+    out->len = n;
+
+    return NGX_OK;
+}
+
+
+static ngx_flag_t
+ngx_auth_httpsig_base_qs_unreserved(u_char c)
+{
+    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z')
+           || (c >= 'a' && c <= 'z') || c == '*' || c == '-' || c == '.'
+           || c == '_';
+}
+
+
+/*
+ * application/x-www-form-urlencoded serializing (WHATWG URL Standard):
+ * space encodes to "+", unreserved bytes pass through, anything else
+ * percent-encodes.
+ */
+static ngx_int_t
+ngx_auth_httpsig_base_qs_encode(ngx_pool_t *pool, const ngx_str_t *decoded,
+    ngx_str_t *out)
+{
+    static u_char hex[] = "0123456789ABCDEF";
+    u_char *dst, *p;
+    ngx_uint_t i;
+    size_t cap;
+
+    if (decoded->len == 0) {
+        out->data = NULL;
+        out->len = 0;
+        return NGX_OK;
+    }
+
+    cap = 0;
+
+    for (i = 0; i < decoded->len; i++) {
+        cap += (decoded->data[i] == ' '
+                || ngx_auth_httpsig_base_qs_unreserved(decoded->data[i]))
+               ? 1 : 3;
+    }
+
+    dst = ngx_pnalloc(pool, cap);
+    if (dst == NULL) {
+        return NGX_ERROR;
+    }
+
+    p = dst;
+
+    for (i = 0; i < decoded->len; i++) {
+        if (decoded->data[i] == ' ') {
+            *p++ = '+';
+
+        } else if (ngx_auth_httpsig_base_qs_unreserved(decoded->data[i])) {
+            *p++ = decoded->data[i];
+
+        } else {
+            *p++ = '%';
+            *p++ = hex[decoded->data[i] >> 4];
+            *p++ = hex[decoded->data[i] & 0xf];
+        }
+    }
+
+    out->data = dst;
+    out->len = (size_t) (p - dst);
+
+    return NGX_OK;
+}
+
+
+/*
+ * RFC 9421 section 2.2.8. The query string is parsed per the WHATWG URL
+ * Standard's application/x-www-form-urlencoded algorithm. The "name"
+ * parameter itself carries the form-urlencoded (encoded) form of the
+ * target key, so it is decoded once up front and then compared against
+ * each candidate key decoded on the fly. A name that occurs more than
+ * once MUST NOT be included in the signature base (RFC 9421 section
+ * 2.2.8), so a second match after the first is rejected rather than
+ * silently ignored.
  */
 static ngx_int_t
 ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
@@ -248,10 +418,9 @@ ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
 {
     const ngx_auth_httpsig_sfv_bare_t *name_param;
     ngx_auth_httpsig_sfv_param_t *params;
-    ngx_str_t decoded, value_raw;
-    u_char *p, *end, *seg_end, *eq_pos, *dst;
+    ngx_str_t decoded_name, decoded, value_raw;
+    u_char *p, *end, *seg_end, *eq_pos;
     ngx_uint_t i, nparams;
-    size_t n;
     ngx_flag_t found;
 
     name_param = ngx_auth_httpsig_sfv_param_get(component->params, "name");
@@ -276,6 +445,13 @@ ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
         }
     }
 
+    if (ngx_auth_httpsig_base_qs_decode(pool, &name_param->value,
+                                        &decoded_name)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
     found = 0;
     value_raw.data = NULL;
     value_raw.len = 0;
@@ -293,24 +469,27 @@ ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
 
         eq_pos = ngx_auth_httpsig_base_find(p, seg_end, '=');
 
-        if (eq_pos != NULL) {
-            key.data = p;
-            key.len = (size_t) (eq_pos - p);
-            value_raw.data = eq_pos + 1;
-            value_raw.len = (size_t) (seg_end - (eq_pos + 1));
+        key.data = p;
+        key.len = (size_t) ((eq_pos != NULL ? eq_pos : seg_end) - p);
 
-        } else {
-            key.data = p;
-            key.len = (size_t) (seg_end - p);
-            value_raw.data = seg_end;
-            value_raw.len = 0;
-        }
-
-        if (key.len == name_param->value.len
-            && ngx_memcmp(key.data, name_param->value.data, key.len) == 0)
+        if (ngx_auth_httpsig_base_qs_key_eq(key.data, key.data + key.len,
+                                            &decoded_name))
         {
+            if (found) {
+                *reason = NGX_AUTH_HTTPSIG_BASE_MISSING_FIELD;
+                return NGX_DECLINED;
+            }
+
             found = 1;
-            break;
+
+            if (eq_pos != NULL) {
+                value_raw.data = eq_pos + 1;
+                value_raw.len = (size_t) (seg_end - (eq_pos + 1));
+
+            } else {
+                value_raw.data = seg_end;
+                value_raw.len = 0;
+            }
         }
 
         p = (seg_end < end) ? seg_end + 1 : end;
@@ -321,33 +500,15 @@ ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
         return NGX_DECLINED;
     }
 
-    dst = ngx_pnalloc(pool, value_raw.len);
-    if (dst == NULL) {
+    if (ngx_auth_httpsig_base_qs_decode(pool, &value_raw, &decoded)
+        != NGX_OK)
+    {
         return NGX_ERROR;
     }
 
-    n = 0;
-
-    for (i = 0; i < value_raw.len; i++) {
-        if (value_raw.data[i] == '%' && i + 2 < value_raw.len
-            && ngx_auth_httpsig_base_is_hex(value_raw.data[i + 1])
-            && ngx_auth_httpsig_base_is_hex(value_raw.data[i + 2]))
-        {
-            dst[n++] = (u_char)
-                       ((ngx_auth_httpsig_base_hex_val(value_raw.data[i + 1]) <<
-                         4)
-                        | ngx_auth_httpsig_base_hex_val(value_raw.data[i + 2]));
-            i += 2;
-
-        } else {
-            dst[n++] = value_raw.data[i];
-        }
+    if (ngx_auth_httpsig_base_qs_encode(pool, &decoded, out) != NGX_OK) {
+        return NGX_ERROR;
     }
-
-    decoded.data = dst;
-    decoded.len = n;
-
-    *out = decoded;
 
     return NGX_OK;
 }
