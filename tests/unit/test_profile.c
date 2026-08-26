@@ -260,6 +260,150 @@ TEST(profile_verify_success)
 }
 
 
+TEST(profile_agent_host_extracts_valid_host)
+{
+    profile_fixture_t               fx;
+    ngx_auth_httpsig_profile_ctx_t  pctx;
+    ngx_auth_httpsig_signature_t    sig;
+    ngx_auth_httpsig_result_t       result;
+    ngx_str_t                       input_text, agent;
+
+    ASSERT_EQ_INT(NGX_OK, build_fixture(pool, &fx));
+
+    agent = str("\"https://Example.COM:443/agents/1\"");
+    push_header(pool, fx.req->headers,
+                &(ngx_str_t) ngx_string("signature-agent"), &agent);
+
+    input_text = fmt(pool,
+        "sig1=(\"@target-uri\" \"@authority\" \"signature-agent\");"
+        "created=%d;expires=%d;keyid=\"%.*s\";tag=\"web-bot-auth\"",
+        TEST_NOW - 5, TEST_NOW + 55,
+        (int) fx.thumbprint.len, (char *) fx.thumbprint.data);
+
+    attach_signature(pool, &fx, &input_text, "sig1");
+
+    pctx = build_ctx(&fx);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_profile_verify(pool, &pctx, fx.req, &sig, &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_OK, result);
+    ASSERT_STR_EQ(sig.agent_host, "example.com");
+
+    ngx_auth_httpsig_keys_free(fx.keys);
+    EVP_PKEY_free(fx.pkey);
+
+    return 0;
+}
+
+
+TEST(profile_agent_host_rejects_invalid_bytes)
+{
+    profile_fixture_t               fx;
+    ngx_auth_httpsig_profile_ctx_t  pctx;
+    ngx_auth_httpsig_signature_t    sig;
+    ngx_auth_httpsig_result_t       result;
+    ngx_str_t                       input_text, agent;
+
+    ASSERT_EQ_INT(NGX_OK, build_fixture(pool, &fx));
+
+    agent = str("\"https://a.test,evil\"");
+    push_header(pool, fx.req->headers,
+                &(ngx_str_t) ngx_string("signature-agent"), &agent);
+
+    input_text = fmt(pool,
+        "sig1=(\"@target-uri\" \"@authority\" \"signature-agent\");"
+        "created=%d;expires=%d;keyid=\"%.*s\";tag=\"web-bot-auth\"",
+        TEST_NOW - 5, TEST_NOW + 55,
+        (int) fx.thumbprint.len, (char *) fx.thumbprint.data);
+
+    attach_signature(pool, &fx, &input_text, "sig1");
+
+    pctx = build_ctx(&fx);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_profile_verify(pool, &pctx, fx.req, &sig, &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_OK, result);
+    ASSERT_EQ_INT(0, sig.agent_host.len);
+
+    ngx_auth_httpsig_keys_free(fx.keys);
+    EVP_PKEY_free(fx.pkey);
+
+    return 0;
+}
+
+
+TEST(profile_agent_host_extracts_bracketed_ipv6)
+{
+    profile_fixture_t               fx;
+    ngx_auth_httpsig_profile_ctx_t  pctx;
+    ngx_auth_httpsig_signature_t    sig;
+    ngx_auth_httpsig_result_t       result;
+    ngx_str_t                       input_text, agent;
+
+    ASSERT_EQ_INT(NGX_OK, build_fixture(pool, &fx));
+
+    agent = str("\"https://[2001:DB8::1]:443/agents/1\"");
+    push_header(pool, fx.req->headers,
+                &(ngx_str_t) ngx_string("signature-agent"), &agent);
+
+    input_text = fmt(pool,
+        "sig1=(\"@target-uri\" \"@authority\" \"signature-agent\");"
+        "created=%d;expires=%d;keyid=\"%.*s\";tag=\"web-bot-auth\"",
+        TEST_NOW - 5, TEST_NOW + 55,
+        (int) fx.thumbprint.len, (char *) fx.thumbprint.data);
+
+    attach_signature(pool, &fx, &input_text, "sig1");
+
+    pctx = build_ctx(&fx);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_profile_verify(pool, &pctx, fx.req, &sig, &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_OK, result);
+    ASSERT_STR_EQ(sig.agent_host, "[2001:db8::1]");
+
+    ngx_auth_httpsig_keys_free(fx.keys);
+    EVP_PKEY_free(fx.pkey);
+
+    return 0;
+}
+
+
+TEST(profile_agent_host_rejects_invalid_bracketed_bytes)
+{
+    profile_fixture_t               fx;
+    ngx_auth_httpsig_profile_ctx_t  pctx;
+    ngx_auth_httpsig_signature_t    sig;
+    ngx_auth_httpsig_result_t       result;
+    ngx_str_t                       input_text, agent;
+
+    ASSERT_EQ_INT(NGX_OK, build_fixture(pool, &fx));
+
+    agent = str("\"https://[not,ipv6]/\"");
+    push_header(pool, fx.req->headers,
+                &(ngx_str_t) ngx_string("signature-agent"), &agent);
+
+    input_text = fmt(pool,
+        "sig1=(\"@target-uri\" \"@authority\" \"signature-agent\");"
+        "created=%d;expires=%d;keyid=\"%.*s\";tag=\"web-bot-auth\"",
+        TEST_NOW - 5, TEST_NOW + 55,
+        (int) fx.thumbprint.len, (char *) fx.thumbprint.data);
+
+    attach_signature(pool, &fx, &input_text, "sig1");
+
+    pctx = build_ctx(&fx);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_profile_verify(pool, &pctx, fx.req, &sig, &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_OK, result);
+    ASSERT_EQ_INT(0, sig.agent_host.len);
+
+    ngx_auth_httpsig_keys_free(fx.keys);
+    EVP_PKEY_free(fx.pkey);
+
+    return 0;
+}
+
+
 TEST(profile_tag_mismatch_is_not_signed)
 {
     profile_fixture_t               fx;
@@ -562,6 +706,10 @@ TEST(profile_first_matching_tag_label_wins)
 TEST_SUITE(profile)
 {
     RUN(profile_verify_success);
+    RUN(profile_agent_host_extracts_valid_host);
+    RUN(profile_agent_host_rejects_invalid_bytes);
+    RUN(profile_agent_host_extracts_bracketed_ipv6);
+    RUN(profile_agent_host_rejects_invalid_bracketed_bytes);
     RUN(profile_tag_mismatch_is_not_signed);
     RUN(profile_missing_required_param_is_mismatch);
     RUN(profile_missing_authority_and_target_uri_is_mismatch);

@@ -274,6 +274,25 @@ TEST(field_value_joins_multiple_occurrences)
 }
 
 
+TEST(field_value_joins_empty_first_occurrence)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_str_t name, out;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "x-empty", "");
+    push_header(pool, req->headers, "x-empty", "b");
+
+    name = sfv_str("x-empty");
+    rc = ngx_auth_httpsig_base_field_value(pool, req, &name, &out);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out, ", b");
+
+    return 0;
+}
+
+
 TEST(field_value_missing_returns_declined)
 {
     ngx_auth_httpsig_request_t *req;
@@ -391,7 +410,145 @@ TEST(query_param_extracts_and_decodes)
     rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
                                                  &reason);
     ASSERT_EQ_INT(rc, NGX_OK);
-    ASSERT_STR_EQ(out, "hello world");
+    ASSERT_STR_EQ(out, "hello+world");
+
+    return 0;
+}
+
+
+TEST(query_param_name_matches_percent_encoded_key)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_item_t component;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    req->query = sfv_str("gree%74ing=hi");
+
+    component = build_component(pool, "@query-param");
+    push_param(pool, &component, "name", "greeting");
+
+    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
+                                                 &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out, "hi");
+
+    return 0;
+}
+
+
+TEST(query_param_value_plus_decodes_to_space)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_item_t component;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    req->query = sfv_str("greeting=hello+world");
+
+    component = build_component(pool, "@query-param");
+    push_param(pool, &component, "name", "greeting");
+
+    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
+                                                 &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out, "hello+world");
+
+    return 0;
+}
+
+
+TEST(query_param_name_matches_plus_encoded_space)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_item_t component;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    req->query = sfv_str("a+b=x");
+
+    component = build_component(pool, "@query-param");
+    push_param(pool, &component, "name", "a+b");
+
+    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
+                                                 &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out, "x");
+
+    return 0;
+}
+
+
+TEST(query_param_value_underscore_stays_unescaped)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_item_t component;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    req->query = sfv_str("greeting=token_a");
+
+    component = build_component(pool, "@query-param");
+    push_param(pool, &component, "name", "greeting");
+
+    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
+                                                 &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out, "token_a");
+
+    return 0;
+}
+
+
+TEST(query_param_duplicate_name_is_declined)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_item_t component;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    req->query = sfv_str("role=user&role=admin");
+
+    component = build_component(pool, "@query-param");
+    push_param(pool, &component, "name", "role");
+
+    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
+                                                 &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_MISSING_FIELD);
+
+    return 0;
+}
+
+
+TEST(query_param_empty_value_is_empty_string)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_item_t component;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    req->query = sfv_str("empty=&other=x");
+
+    component = build_component(pool, "@query-param");
+    push_param(pool, &component, "name", "empty");
+
+    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
+                                                 &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_EQ_INT(out.len, 0);
 
     return 0;
 }
@@ -568,11 +725,18 @@ TEST_SUITE(base)
     RUN(path_empty_becomes_root);
     RUN(target_uri_reconstruction);
     RUN(field_value_joins_multiple_occurrences);
+    RUN(field_value_joins_empty_first_occurrence);
     RUN(field_value_missing_returns_declined);
     RUN(derive_component_unknown_at_prefix);
     RUN(derive_component_undefined_target);
     RUN(derive_component_rejects_params);
     RUN(query_param_extracts_and_decodes);
+    RUN(query_param_name_matches_percent_encoded_key);
+    RUN(query_param_value_plus_decodes_to_space);
+    RUN(query_param_name_matches_plus_encoded_space);
+    RUN(query_param_value_underscore_stays_unescaped);
+    RUN(query_param_duplicate_name_is_declined);
+    RUN(query_param_empty_value_is_empty_string);
     RUN(query_param_missing_returns_missing_field);
     RUN(query_param_requires_name);
     RUN(build_rejects_duplicate_component);
