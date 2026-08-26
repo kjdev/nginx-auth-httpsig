@@ -61,30 +61,35 @@ typedef struct {
  * are only ever set from the RESULT_OK branch of
  * ngx_http_auth_httpsig_evaluate(), so a failed verification always
  * leaves them empty. directory_host/directory_done/claimed/
- * keys_unavailable/jwks/cache_control/age/dynamic_keys are set by the
- * dynamic key-directory phase handler, not by evaluate(): directory_done
- * marks that the fetch dance (hit / declined / claimed-and-fetched) has
- * run to completion for this request, claimed marks that this worker
- * currently holds the SHM fetch right for directory_host and must
- * release it, and keys_unavailable records that a fetch was attempted
- * but did not yield usable keys (allow-list miss, cache miss while
- * another worker fetches, or a rejected/unparsable response), which
- * evaluate() maps to NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE instead of
- * NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID. */
+ * keys_unavailable/directory_reason/jwks/dynamic_keys are set by the
+ * dynamic key-directory phase handler, not by evaluate():
+ * directory_done marks that the fetch dance (hit / declined /
+ * claimed-and-fetched) has run to completion for this request, claimed
+ * marks that this worker currently holds the SHM fetch right for
+ * directory_host and must release it, keys_unavailable records that a
+ * fetch was attempted but did not yield usable keys (allow-list miss,
+ * cache miss while another worker fetches, or a rejected/unparsable
+ * response), which evaluate() maps to
+ * NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE instead of
+ * NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID, and directory_reason records why
+ * (only meaningful alongside keys_unavailable). internal_error is set by
+ * evaluate() itself, for the NGX_ERROR cases that leave ctx->result at
+ * NOT_SIGNED (fail-open) but still deserve a distinct $httpsig_error
+ * token from "not signed". */
 typedef struct {
-    unsigned                   done:1;
-    unsigned                   directory_done:1;
-    unsigned                   claimed:1;
-    unsigned                   keys_unavailable:1;
-    ngx_auth_httpsig_result_t  result;
-    ngx_str_t                  keyid;
-    ngx_str_t                  agent;
-    ngx_str_t                  directory_host;
-    ngx_str_t                  jwks;          /* fetched body, r->pool */
-    ngx_str_t                  cache_control; /* copied from the fetch
-                                               * response, r->pool */
-    time_t                     age;
-    ngx_auth_httpsig_keys_t   *dynamic_keys;
+    unsigned                         done:1;
+    unsigned                         directory_done:1;
+    unsigned                         claimed:1;
+    unsigned                         keys_unavailable:1;
+    unsigned                         internal_error:1;
+    ngx_auth_httpsig_result_t        result;
+    ngx_auth_httpsig_fetch_reason_t  directory_reason;
+    ngx_str_t                        keyid;
+    ngx_str_t                        agent;
+    ngx_str_t                        directory_host;
+    ngx_str_t                        jwks;           /* fetched body,
+                                                      * r->pool */
+    ngx_auth_httpsig_keys_t         *dynamic_keys;
 } ngx_http_auth_httpsig_ctx_t;
 
 /* Backstop for ngx_http_auth_httpsig_directory_handler(): if the request
@@ -128,6 +133,8 @@ static ngx_int_t ngx_http_auth_httpsig_variable_keyid(
 static ngx_int_t ngx_http_auth_httpsig_variable_agent(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_auth_httpsig_variable_directory_host(
+    ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_auth_httpsig_variable_error(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 
 static ngx_int_t ngx_http_auth_httpsig_directory_handler(
@@ -297,6 +304,10 @@ static ngx_http_variable_t ngx_http_auth_httpsig_variables[] = {
 
     { ngx_string("httpsig_directory_host"), NULL,
       ngx_http_auth_httpsig_variable_directory_host,
+      0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
+
+    { ngx_string("httpsig_error"), NULL,
+      ngx_http_auth_httpsig_variable_error,
       0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
 
     ngx_http_null_variable
@@ -1207,6 +1218,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
                                                &host))
     {
         ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED;
         ctx->directory_done = 1;
         return NGX_DECLINED;
     }
@@ -1221,6 +1233,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         != NGX_OK)
     {
         ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
         ctx->directory_done = 1;
         return NGX_DECLINED;
     }
@@ -1237,14 +1250,21 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
              * failure) the same as no cached keys, rather than as a
              * reason to refetch. */
             ctx->keys_unavailable = 1;
+            ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_INVALID;
         }
 
         ctx->directory_done = 1;
         return NGX_DECLINED;
 
     case NGX_AUTH_HTTPSIG_CACHE_BUSY:
+        ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_BUSY;
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+
     case NGX_AUTH_HTTPSIG_CACHE_NEGATIVE:
         ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE;
         ctx->directory_done = 1;
         return NGX_DECLINED;
 
@@ -1266,6 +1286,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         ctx->claimed = 0;
         ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
         ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
         ctx->directory_done = 1;
         return NGX_DECLINED;
     }
@@ -1282,6 +1303,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         ctx->claimed = 0;
         ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
         ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
         ctx->directory_done = 1;
         return NGX_DECLINED;
     }
@@ -1297,6 +1319,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         ctx->claimed = 0;
         ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
         ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
         ctx->directory_done = 1;
         return NGX_DECLINED;
     }
@@ -1451,11 +1474,15 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
         } else {
             ngx_log_error(NGX_LOG_INFO, sr->connection->log, 0,
                           "auth_httpsig: key directory fetch for \"%V\" "
-                          "rejected, reason=%d, status=%ui",
-                          &ctx->directory_host, reason, status);
+                          "rejected, reason=%s, status=%ui",
+                          &ctx->directory_host,
+                          ngx_auth_httpsig_directory_reason_name(reason),
+                          status);
         }
 
     } else {
+        reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
+
         ngx_log_error(NGX_LOG_INFO, sr->connection->log, 0,
                       "auth_httpsig: key directory fetch for \"%V\" "
                       "failed, rc=%i", &ctx->directory_host, rc);
@@ -1487,15 +1514,18 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
 
             } else {
                 accepted = 0;
+                reason = NGX_AUTH_HTTPSIG_FETCH_INVALID;
             }
 
         } else {
             accepted = 0;
+            reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
         }
     }
 
     if (!accepted) {
         ctx->keys_unavailable = 1;
+        ctx->directory_reason = reason;
         ngx_auth_httpsig_cache_release(cache, &ctx->directory_host,
                                        now + lcf->directory.cache_min_ttl);
     }
@@ -1579,6 +1609,7 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     if (ngx_http_auth_httpsig_build_request(r, &req) != NGX_OK) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "auth_httpsig: failed to build the request snapshot");
+        ctx->internal_error = 1;
         return NGX_OK;
     }
 
@@ -1598,6 +1629,7 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     if (rc == NGX_ERROR) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "auth_httpsig: verification failed internally");
+        ctx->internal_error = 1;
         return NGX_OK;
     }
 
@@ -1727,6 +1759,53 @@ ngx_http_auth_httpsig_variable_directory_host(ngx_http_request_t *r,
 
     v->data = ctx->directory_host.data;
     v->len = ctx->directory_host.len;
+    v->valid = 1;
+    v->no_cacheable = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+
+/*
+ * A single lowercase token, distinct from $httpsig_verified (which stays
+ * pinned to "1"/"0"/unset for fail-open compatibility, ADR 0016):
+ * internal errors and directory-fetch failures both leave ctx->result at
+ * NOT_SIGNED or KEY_UNAVAILABLE, so this reads ctx->internal_error and
+ * ctx->directory_reason to recover the finer-grained reason.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_variable_error(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_auth_httpsig_ctx_t *ctx;
+    const char *name;
+
+    if (ngx_http_auth_httpsig_evaluate(r, &ctx) != NGX_OK || ctx == NULL) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+
+    if (ctx->internal_error) {
+        name = "internal";
+
+    } else if (ctx->result == NGX_AUTH_HTTPSIG_RESULT_OK
+               || ctx->result == NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED)
+    {
+        v->not_found = 1;
+        return NGX_OK;
+
+    } else if (ctx->result == NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE
+               && ctx->directory_reason != NGX_AUTH_HTTPSIG_FETCH_OK)
+    {
+        name = ngx_auth_httpsig_directory_reason_name(ctx->directory_reason);
+
+    } else {
+        name = ngx_auth_httpsig_result_name(ctx->result);
+    }
+
+    v->data = (u_char *) name;
+    v->len = ngx_strlen(name);
     v->valid = 1;
     v->no_cacheable = 1;
     v->not_found = 0;
