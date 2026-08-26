@@ -139,7 +139,7 @@ our $MainConfig = <<'_EOC_';
     location /t {
         default_type       text/plain;
         sub_filter_types    text/plain;
-        sub_filter          'RESPONSE_MARKER'  'verified:$httpsig_verified';
+        sub_filter          'RESPONSE_MARKER'  'verified:$httpsig_verified error:$httpsig_error';
         sub_filter_once      on;
         proxy_pass  http://127.0.0.1:18449/marker;
     }
@@ -184,8 +184,8 @@ sub sign_headers {
         . "Signature: $sig\n";
 }
 
-# Cache-TTL-reuse/refetch assertions depend on TEST 1/2/7/8 running in file
-# order; Test::Nginx shuffles block order by default.
+# Cache-TTL-reuse/refetch assertions depend on TEST 1/2/4/5/8/9 running in
+# file order; Test::Nginx shuffles block order by default.
 no_shuffle();
 
 run_tests();
@@ -202,7 +202,7 @@ main::sign_headers('127.0.0.1:18443')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified:1
+verified:1 error:
 --- error_log
 18443 GET /.well-known/http-message-signatures-directory
 
@@ -218,7 +218,7 @@ main::sign_headers('127.0.0.1:18443')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified:1
+verified:1 error:
 --- grep_error_log eval: qr/18443 GET \/\.well-known\/http-message-signatures-directory\S*/
 --- grep_error_log_out
 18443 GET /.well-known/http-message-signatures-directory
@@ -235,7 +235,7 @@ main::sign_headers('evil.example.test')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified:
+verified: error:directory_not_allowed
 
 
 
@@ -249,11 +249,25 @@ main::sign_headers('127.0.0.1:18444')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified:
+verified: error:directory_redirect
 
 
 
-=== TEST 5: a non-200 status is rejected
+=== TEST 5: a retry within the negative-cache TTL after a failed fetch is rejected without refetching
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18444')
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified: error:directory_unavailable
+
+
+
+=== TEST 6: a non-200 status is rejected
 --- http_config eval: $::HttpConfig
 --- config eval: $::MainConfig
 --- more_headers eval
@@ -263,11 +277,11 @@ main::sign_headers('127.0.0.1:18445')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified:
+verified: error:directory_status
 
 
 
-=== TEST 6: a mismatched media type is rejected
+=== TEST 7: a mismatched media type is rejected
 --- http_config eval: $::HttpConfig
 --- config eval: $::MainConfig
 --- more_headers eval
@@ -277,11 +291,11 @@ main::sign_headers('127.0.0.1:18446')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified:
+verified: error:directory_media_type
 
 
 
-=== TEST 7: a response larger than the size limit is rejected
+=== TEST 8: a response larger than the size limit is rejected
 --- http_config eval: $::HttpConfig
 --- config eval: $::MainConfig
 --- more_headers eval
@@ -291,12 +305,12 @@ main::sign_headers('127.0.0.1:18447')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified:
+verified: error:directory_too_large
 --- wait: 2
 
 
 
-=== TEST 8: a request after the cache TTL has elapsed triggers a fresh fetch
+=== TEST 9: a request after the cache TTL has elapsed triggers a fresh fetch
 --- http_config eval: $::HttpConfig
 --- config eval: $::MainConfig
 --- more_headers eval
@@ -306,7 +320,7 @@ main::sign_headers('127.0.0.1:18443')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified:1
+verified:1 error:
 --- grep_error_log eval: qr/18443 GET \/\.well-known\/http-message-signatures-directory\S*/
 --- grep_error_log_out
 18443 GET /.well-known/http-message-signatures-directory
@@ -314,7 +328,7 @@ verified:1
 
 
 
-=== TEST 9: concurrent requests for an uncached host both succeed without a crash or spurious rejection
+=== TEST 10: concurrent requests for an uncached host both succeed without a crash or spurious rejection
 --- http_config eval: $::HttpConfig
 --- config eval: $::MainConfig
 --- pipelined_requests eval
@@ -326,4 +340,4 @@ my $headers = main::sign_headers('127.0.0.1:18448');
 --- error_code eval
 [200, 200]
 --- response_body eval
-["verified:1", "verified:1"]
+["verified:1 error:", "verified:1 error:"]

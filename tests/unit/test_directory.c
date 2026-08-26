@@ -524,6 +524,72 @@ TEST(directory_check_response_rejects_empty_body)
 }
 
 
+TEST(directory_reason_name_covers_all_values)
+{
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_OK),
+               "directory_ok") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_NOT_HTTPS),
+               "directory_not_https") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_REDIRECT),
+               "directory_redirect") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_STATUS),
+               "directory_status") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_MEDIA_TYPE),
+               "directory_media_type") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_TOO_LARGE),
+               "directory_too_large") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_EMPTY),
+               "directory_empty") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED),
+               "directory_not_allowed") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_BUSY),
+               "directory_busy") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE),
+               "directory_unavailable") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_INVALID),
+               "directory_invalid") == 0);
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   NGX_AUTH_HTTPSIG_FETCH_FAILED),
+               "directory_failed") == 0);
+
+    return 0;
+}
+
+
+TEST(directory_reason_name_out_of_range_is_unknown)
+{
+    ASSERT(strcmp(
+               ngx_auth_httpsig_directory_reason_name(
+                   (ngx_auth_httpsig_fetch_reason_t) 999),
+               "unknown") == 0);
+
+    return 0;
+}
+
+
 TEST_SUITE(directory)
 {
     RUN(directory_normalize_lowercases);
@@ -558,4 +624,6 @@ TEST_SUITE(directory)
     RUN(directory_check_response_rejects_missing_content_type);
     RUN(directory_check_response_rejects_oversized_body);
     RUN(directory_check_response_rejects_empty_body);
+    RUN(directory_reason_name_covers_all_values);
+    RUN(directory_reason_name_out_of_range_is_unknown);
 }
