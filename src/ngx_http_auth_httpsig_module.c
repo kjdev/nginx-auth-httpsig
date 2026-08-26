@@ -60,15 +60,44 @@ typedef struct {
  * across the get_handler calls of the $httpsig_* variables); keyid/agent
  * are only ever set from the RESULT_OK branch of
  * ngx_http_auth_httpsig_evaluate(), so a failed verification always
- * leaves them empty. directory_host is set by the dynamic key-directory
- * phase handler, not by evaluate(). */
+ * leaves them empty. directory_host/directory_done/claimed/
+ * keys_unavailable/jwks/cache_control/age/dynamic_keys are set by the
+ * dynamic key-directory phase handler, not by evaluate(): directory_done
+ * marks that the fetch dance (hit / declined / claimed-and-fetched) has
+ * run to completion for this request, claimed marks that this worker
+ * currently holds the SHM fetch right for directory_host and must
+ * release it, and keys_unavailable records that a fetch was attempted
+ * but did not yield usable keys (allow-list miss, cache miss while
+ * another worker fetches, or a rejected/unparsable response), which
+ * evaluate() maps to NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE instead of
+ * NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID. */
 typedef struct {
     unsigned                   done:1;
+    unsigned                   directory_done:1;
+    unsigned                   claimed:1;
+    unsigned                   keys_unavailable:1;
     ngx_auth_httpsig_result_t  result;
     ngx_str_t                  keyid;
     ngx_str_t                  agent;
     ngx_str_t                  directory_host;
+    ngx_str_t                  jwks;          /* fetched body, r->pool */
+    ngx_str_t                  cache_control; /* copied from the fetch
+                                               * response, r->pool */
+    time_t                     age;
+    ngx_auth_httpsig_keys_t   *dynamic_keys;
 } ngx_http_auth_httpsig_ctx_t;
+
+/* Backstop for ngx_http_auth_httpsig_directory_handler(): if the request
+ * ends (client abort, internal error) while ctx->claimed is still set --
+ * meaning the ordinary release path in
+ * ngx_http_auth_httpsig_directory_done() never ran -- this releases the
+ * SHM fetch right so the host does not stay stuck BUSY forever. */
+typedef struct {
+    ngx_http_auth_httpsig_ctx_t  *ctx;
+    ngx_auth_httpsig_cache_ctx_t *cache;
+    ngx_str_t                     host;
+    time_t                        retry_ttl;
+} ngx_http_auth_httpsig_directory_cleanup_t;
 
 
 static ngx_int_t ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf);
@@ -103,6 +132,9 @@ static ngx_int_t ngx_http_auth_httpsig_variable_directory_host(
 
 static ngx_int_t ngx_http_auth_httpsig_directory_handler(
     ngx_http_request_t *r);
+static ngx_int_t ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr,
+    void *data, ngx_int_t rc);
+static void ngx_http_auth_httpsig_directory_cleanup(void *data);
 static ngx_int_t ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_http_auth_httpsig_ctx_t **out);
 static ngx_table_elt_t *ngx_http_auth_httpsig_find_header(
@@ -572,7 +604,8 @@ ngx_http_auth_httpsig_set_jwks_file(ngx_conf_t *cf, ngx_command_t *cmd,
     ngx_close_file(fd);
 
     if (ngx_auth_httpsig_keys_load_jwks(cf->pool, &content, &path,
-                                        &lcf->jwks.keys) != NGX_OK)
+                                        NGX_LOG_EMERG, &lcf->jwks.keys)
+        != NGX_OK)
     {
         return NGX_CONF_ERROR;
     }
@@ -1072,17 +1105,38 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
  * verifies an optional signature, it never causes a 500.
  */
 /*
- * Guards only, at this stage: dispatching the directory-fetch subrequest
- * is later work. r != r->main is checked here (not deferred to that
- * later work) because it must hold before a subrequest is ever issued,
- * or the fetch subrequest would recurse into this same handler. No ctx is
- * created here -- doing so would make ngx_http_auth_httpsig_evaluate()
- * see an already-"done" ctx and skip verification entirely.
+ * r != r->main is checked first, before anything else: the fetch
+ * subrequest issued below runs through this same phase, and without this
+ * guard it would recurse into itself. ctx is created (but never marked
+ * done) as soon as Signature-Input/Signature-Agent are both present, so
+ * ngx_http_auth_httpsig_evaluate() -- which may run first if some other
+ * module reads $httpsig_* earlier in the phase chain -- can tell "not yet
+ * evaluated" (ctx present, done == 0) from "no ctx at all".
+ *
+ * Returns NGX_AGAIN only once a fetch subrequest has actually been
+ * posted; every other outcome (disabled, not eligible, cache hit/miss,
+ * allocation failure) is NGX_DECLINED, per this module's fail-open
+ * design -- a directory fetch that cannot happen simply leaves
+ * ctx->keys_unavailable set, which ngx_http_auth_httpsig_evaluate() later
+ * turns into NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE instead of aborting
+ * the request.
  */
 static ngx_int_t
 ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
 {
     ngx_http_auth_httpsig_loc_conf_t *lcf;
+    ngx_http_auth_httpsig_main_conf_t *mcf;
+    ngx_http_auth_httpsig_ctx_t *ctx;
+    ngx_auth_httpsig_cache_ctx_t *cache;
+    ngx_http_auth_httpsig_directory_cleanup_t *cln_data;
+    ngx_pool_cleanup_t *cln;
+    ngx_http_post_subrequest_t *ps;
+    ngx_http_request_t *sr;
+    ngx_table_elt_t *sig_input, *sig_agent;
+    ngx_str_t agent_host, host, jwks;
+    ngx_auth_httpsig_host_reason_t host_reason;
+    ngx_auth_httpsig_cache_status_t status;
+    time_t retry_ttl;
 
     if (r != r->main) {
         return NGX_DECLINED;
@@ -1090,11 +1144,388 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
 
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_httpsig_module);
 
-    if (!lcf->directory.enabled) {
+    if (lcf->mode == NGX_HTTP_AUTH_HTTPSIG_MODE_OFF
+        || !lcf->directory.enabled)
+    {
         return NGX_DECLINED;
     }
 
-    return NGX_DECLINED;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_auth_httpsig_module);
+
+    if (ctx != NULL) {
+        if (ctx->directory_done) {
+            return NGX_DECLINED;
+        }
+
+        if (ctx->claimed) {
+            /* the fetch subrequest is still in flight; this is a
+             * spurious re-entry, not the normal post-subrequest resume
+             * (that path always sets directory_done before returning
+             * control to the phase engine). */
+            return NGX_AGAIN;
+        }
+
+        if (ctx->done) {
+            /* $httpsig_* was already evaluated by something earlier in
+             * the phase chain; a fetch now would never be consumed. */
+            ctx->directory_done = 1;
+            return NGX_DECLINED;
+        }
+
+    } else {
+        ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_auth_httpsig_ctx_t));
+        if (ctx == NULL) {
+            return NGX_ERROR;
+        }
+
+        ngx_http_set_ctx(r, ctx, ngx_http_auth_httpsig_module);
+    }
+
+    sig_input = ngx_http_auth_httpsig_find_header(r, "signature-input",
+                                                  sizeof("signature-input") -
+                                                  1);
+    sig_agent = ngx_http_auth_httpsig_find_header(r, "signature-agent",
+                                                  sizeof("signature-agent") -
+                                                  1);
+
+    if (sig_input == NULL || sig_agent == NULL) {
+        /* Signature-Agent alone must not trigger a fetch: an
+         * unauthenticated client could otherwise use it to amplify
+         * traffic toward an allow-listed host. */
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+    }
+
+    ngx_auth_httpsig_profile_agent_host(r->pool, &sig_agent->value,
+                                        &agent_host);
+
+    if (agent_host.len == 0
+        || ngx_auth_httpsig_directory_normalize_host(r->pool, &agent_host,
+                                                     &host, &host_reason)
+        != NGX_OK
+        || !ngx_auth_httpsig_directory_allowed(lcf->directory.trusted_agents,
+                                               &host))
+    {
+        ctx->keys_unavailable = 1;
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+    }
+
+    ctx->directory_host = host;
+
+    mcf = ngx_http_get_module_main_conf(r, ngx_http_auth_httpsig_module);
+    cache = mcf->shm_zone->data;
+
+    if (ngx_auth_httpsig_cache_lookup(cache, r->pool, &host, ngx_time(),
+                                      &jwks, &status)
+        != NGX_OK)
+    {
+        ctx->keys_unavailable = 1;
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+    }
+
+    switch (status) {
+
+    case NGX_AUTH_HTTPSIG_CACHE_HIT:
+        if (ngx_auth_httpsig_keys_load_jwks(r->pool, &jwks, &host,
+                                            NGX_LOG_WARN, &ctx->dynamic_keys)
+            != NGX_OK)
+        {
+            /* the cached document was accepted on a previous fetch;
+             * treat a parse failure now (e.g. a pool allocation
+             * failure) the same as no cached keys, rather than as a
+             * reason to refetch. */
+            ctx->keys_unavailable = 1;
+        }
+
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+
+    case NGX_AUTH_HTTPSIG_CACHE_BUSY:
+    case NGX_AUTH_HTTPSIG_CACHE_NEGATIVE:
+        ctx->keys_unavailable = 1;
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+
+    default: /* NGX_AUTH_HTTPSIG_CACHE_CLAIMED */
+        break;
+    }
+
+    /* This worker now holds the SHM fetch right for host and must
+     * eventually call cache_store() or cache_release(). The pool
+     * cleanup backstop is registered before anything else below can
+     * fail, so any failure from here on still releases the right
+     * instead of leaving host BUSY until the cache entry ages out. */
+    ctx->claimed = 1;
+    retry_ttl = lcf->directory.cache_min_ttl;
+
+    cln = ngx_pool_cleanup_add(r->pool,
+                               sizeof(ngx_http_auth_httpsig_directory_cleanup_t));
+    if (cln == NULL) {
+        ctx->claimed = 0;
+        ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
+        ctx->keys_unavailable = 1;
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+    }
+
+    cln->handler = ngx_http_auth_httpsig_directory_cleanup;
+    cln_data = cln->data;
+    cln_data->ctx = ctx;
+    cln_data->cache = cache;
+    cln_data->host = host;
+    cln_data->retry_ttl = retry_ttl;
+
+    ps = ngx_palloc(r->pool, sizeof(ngx_http_post_subrequest_t));
+    if (ps == NULL) {
+        ctx->claimed = 0;
+        ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
+        ctx->keys_unavailable = 1;
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+    }
+
+    ps->handler = ngx_http_auth_httpsig_directory_done;
+    ps->data = ctx;
+
+    if (ngx_http_subrequest(r, &lcf->directory.request_uri, NULL, &sr, ps,
+                            NGX_HTTP_SUBREQUEST_IN_MEMORY
+                            | NGX_HTTP_SUBREQUEST_WAITED)
+        != NGX_OK)
+    {
+        ctx->claimed = 0;
+        ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
+        ctx->keys_unavailable = 1;
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+    }
+
+    /* From here on the subrequest is posted and its post_subrequest
+     * handler will run to completion (releasing the fetch right and
+     * setting directory_done) regardless of what happens next in this
+     * function, so every remaining failure mode falls through to
+     * NGX_AGAIN rather than declining. */
+
+    sr->request_body = ngx_pcalloc(r->pool, sizeof(ngx_http_request_body_t));
+
+    return NGX_AGAIN;
+}
+
+
+/*
+ * post_subrequest handler for the key-directory fetch. Classifies the
+ * response, copies out what is needed before the subrequest's pool is
+ * torn down, loads it into a keyset on success, and always releases the
+ * SHM fetch right claimed by ngx_http_auth_httpsig_directory_handler()
+ * before returning -- this is the only ordinary (non-backstop) release
+ * path.
+ *
+ * sr->upstream->schema is "<scheme>://" (e.g. "https://"), while
+ * ngx_auth_httpsig_directory_check_response() expects a bare scheme (e.g.
+ * "https"); the trailing "://" is stripped before the call.
+ *
+ * The response body lands in sr->out->buf (a single link), not in
+ * sr->upstream->buffer -- NGX_HTTP_SUBREQUEST_IN_MEMORY routes output
+ * through ngx_http_postpone_filter_in_memory(), which accumulates into
+ * the subrequest's own output chain.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
+    ngx_int_t rc)
+{
+    ngx_http_auth_httpsig_ctx_t *ctx = data;
+    ngx_http_auth_httpsig_loc_conf_t *lcf;
+    ngx_http_auth_httpsig_main_conf_t *mcf;
+    ngx_auth_httpsig_cache_ctx_t *cache;
+    ngx_str_t schema, content_type, body, cache_control;
+    ngx_table_elt_t *h;
+    ngx_list_part_t *part;
+    ngx_uint_t i, status;
+    time_t now, age, ttl;
+    size_t len;
+    u_char *p;
+    ngx_flag_t accepted;
+    ngx_auth_httpsig_fetch_reason_t reason;
+
+    lcf = ngx_http_get_module_loc_conf(sr, ngx_http_auth_httpsig_module);
+    mcf = ngx_http_get_module_main_conf(sr, ngx_http_auth_httpsig_module);
+    cache = mcf->shm_zone->data;
+
+    accepted = 0;
+    ngx_str_null(&body);
+    ngx_str_null(&cache_control);
+    age = 0;
+
+    if (rc == NGX_OK && sr->upstream != NULL) {
+        schema = sr->upstream->schema;
+
+        if (schema.len >= 3
+            && ngx_memcmp(schema.data + schema.len - 3, "://", 3) == 0)
+        {
+            schema.len -= 3;
+        }
+
+        status = sr->headers_out.status;
+
+        content_type.len = 0;
+        content_type.data = NULL;
+
+        if (sr->headers_out.content_type.len) {
+            content_type = sr->headers_out.content_type;
+        }
+
+        if (sr->out != NULL) {
+            body.data = sr->out->buf->pos;
+            body.len = sr->out->buf->last - sr->out->buf->pos;
+        }
+
+        if (sr->upstream->headers_in.cache_control != NULL) {
+            len = 0;
+
+            for (h = sr->upstream->headers_in.cache_control; h != NULL;
+                 h = h->next)
+            {
+                len += h->value.len + 2;
+            }
+
+            p = ngx_pnalloc(sr->parent->pool, len);
+
+            if (p != NULL) {
+                cache_control.data = p;
+
+                for (h = sr->upstream->headers_in.cache_control; h != NULL;
+                     h = h->next)
+                {
+                    p = ngx_cpymem(p, h->value.data, h->value.len);
+
+                    if (h->next != NULL) {
+                        *p++ = ',';
+                        *p++ = ' ';
+                    }
+                }
+
+                cache_control.len = p - cache_control.data;
+            }
+        }
+
+        part = &sr->upstream->headers_in.headers.part;
+        h = part->elts;
+
+        for (i = 0; /* void */; i++) {
+            if (i >= part->nelts) {
+                if (part->next == NULL) {
+                    break;
+                }
+
+                part = part->next;
+                h = part->elts;
+                i = 0;
+            }
+
+            if (h[i].key.len == sizeof("age") - 1
+                && ngx_strncasecmp(h[i].key.data, (u_char *) "age",
+                                   sizeof("age") - 1) == 0)
+            {
+                age = ngx_atotm(h[i].value.data, h[i].value.len);
+
+                if (age == (time_t) NGX_ERROR) {
+                    age = 0;
+                }
+
+                break;
+            }
+        }
+
+        if (ngx_auth_httpsig_directory_check_response(&schema, status,
+                                                      &content_type,
+                                                      &lcf->profile.def->
+                                                      directory_media_type,
+                                                      body.len,
+                                                      lcf->directory.max_size,
+                                                      &reason)
+            == NGX_OK)
+        {
+            accepted = 1;
+
+        } else {
+            ngx_log_error(NGX_LOG_INFO, sr->connection->log, 0,
+                          "auth_httpsig: key directory fetch for \"%V\" "
+                          "rejected, reason=%d, status=%ui",
+                          &ctx->directory_host, reason, status);
+        }
+
+    } else {
+        ngx_log_error(NGX_LOG_INFO, sr->connection->log, 0,
+                      "auth_httpsig: key directory fetch for \"%V\" "
+                      "failed, rc=%i", &ctx->directory_host, rc);
+    }
+
+    now = ngx_time();
+
+    if (accepted) {
+        ctx->jwks.data = ngx_pnalloc(sr->parent->pool, body.len);
+
+        if (ctx->jwks.data != NULL) {
+            ngx_memcpy(ctx->jwks.data, body.data, body.len);
+            ctx->jwks.len = body.len;
+
+            if (ngx_auth_httpsig_keys_load_jwks(sr->parent->pool, &ctx->jwks,
+                                                &ctx->directory_host,
+                                                NGX_LOG_WARN,
+                                                &ctx->dynamic_keys)
+                == NGX_OK)
+            {
+                ttl = ngx_auth_httpsig_directory_ttl(&cache_control, age,
+                                                     lcf->directory.
+                                                     cache_min_ttl,
+                                                     lcf->directory.
+                                                     cache_max_ttl);
+
+                ngx_auth_httpsig_cache_store(cache, &ctx->directory_host,
+                                             &ctx->jwks, now + ttl);
+
+            } else {
+                accepted = 0;
+            }
+
+        } else {
+            accepted = 0;
+        }
+    }
+
+    if (!accepted) {
+        ctx->keys_unavailable = 1;
+        ngx_auth_httpsig_cache_release(cache, &ctx->directory_host,
+                                       now + lcf->directory.cache_min_ttl);
+    }
+
+    ctx->claimed = 0;
+    ctx->directory_done = 1;
+
+    return NGX_OK;
+}
+
+
+/*
+ * Backstop for ngx_http_auth_httpsig_directory_handler(): runs whenever
+ * r->pool is destroyed, whether or not
+ * ngx_http_auth_httpsig_directory_done() ran to completion first. If
+ * ctx->claimed is still set here, the ordinary release path never ran
+ * (client abort, worker shutdown mid-fetch, ...), so this releases the
+ * SHM fetch right for host instead of leaving it stuck BUSY until some
+ * other worker's fetching_since staleness check reclaims it.
+ */
+static void
+ngx_http_auth_httpsig_directory_cleanup(void *data)
+{
+    ngx_http_auth_httpsig_directory_cleanup_t *cln = data;
+
+    if (cln->ctx->claimed) {
+        cln->ctx->claimed = 0;
+        ngx_auth_httpsig_cache_release(cln->cache, &cln->host,
+                                       ngx_time() + cln->retry_ttl);
+    }
 }
 
 
@@ -1118,18 +1549,21 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     }
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_auth_httpsig_module);
-    if (ctx != NULL) {
+
+    if (ctx != NULL && ctx->done) {
         *out = ctx;
         return NGX_OK;
     }
 
-    ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_auth_httpsig_ctx_t));
     if (ctx == NULL) {
-        *out = NULL;
-        return NGX_ERROR;
-    }
+        ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_auth_httpsig_ctx_t));
+        if (ctx == NULL) {
+            *out = NULL;
+            return NGX_ERROR;
+        }
 
-    ngx_http_set_ctx(r, ctx, ngx_http_auth_httpsig_module);
+        ngx_http_set_ctx(r, ctx, ngx_http_auth_httpsig_module);
+    }
 
     ctx->done = 1;
     ctx->result = NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED;
@@ -1151,7 +1585,10 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_memzero(&sig, sizeof(ngx_auth_httpsig_signature_t));
 
     pctx.profile = lcf->profile.def;
-    pctx.keys = lcf->jwks.keys;
+
+    pctx.keys = ngx_auth_httpsig_keys_chain(r->pool, ctx->dynamic_keys,
+                                            lcf->jwks.keys);
+
     pctx.expires_max = lcf->profile.expires_max;
     pctx.max_skew = lcf->profile.max_skew;
     pctx.now = 0;
@@ -1162,6 +1599,12 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "auth_httpsig: verification failed internally");
         return NGX_OK;
+    }
+
+    if (result == NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID
+        && ctx->keys_unavailable)
+    {
+        result = NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE;
     }
 
     ctx->result = result;
@@ -1192,7 +1635,8 @@ ngx_http_auth_httpsig_variable_verified(ngx_http_request_t *r,
     ngx_http_auth_httpsig_ctx_t *ctx;
 
     if (ngx_http_auth_httpsig_evaluate(r, &ctx) != NGX_OK || ctx == NULL
-        || ctx->result == NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED)
+        || ctx->result == NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED
+        || ctx->result == NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE)
     {
         v->not_found = 1;
         return NGX_OK;
