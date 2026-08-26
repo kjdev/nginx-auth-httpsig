@@ -359,6 +359,171 @@ TEST(directory_ttl_age_is_subtracted)
 }
 
 
+#define TEST_MEDIA_TYPE \
+        "application/http-message-signatures-directory+json"
+
+
+TEST(directory_check_response_accepts_profile_media_type)
+{
+    ngx_str_t                        schema, ctype, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("https");
+    ctype = str(TEST_MEDIA_TYPE);
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_directory_check_response(&schema, 200, &ctype,
+            &media, 3, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_OK, reason);
+
+    return 0;
+}
+
+
+TEST(directory_check_response_accepts_application_json)
+{
+    ngx_str_t                        schema, ctype, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("https");
+    ctype = str("application/json; charset=utf-8");
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_directory_check_response(&schema, 200, &ctype,
+            &media, 3, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_OK, reason);
+
+    return 0;
+}
+
+
+TEST(directory_check_response_rejects_non_https_schema)
+{
+    ngx_str_t                        schema, ctype, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("http");
+    ctype = str("application/json");
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_directory_check_response(&schema, 200, &ctype,
+            &media, 3, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_NOT_HTTPS, reason);
+
+    return 0;
+}
+
+
+TEST(directory_check_response_rejects_redirect_status)
+{
+    ngx_str_t                        schema, ctype, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("https");
+    ctype = str("application/json");
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_directory_check_response(&schema, 302, &ctype,
+            &media, 3, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_REDIRECT, reason);
+
+    return 0;
+}
+
+
+TEST(directory_check_response_rejects_non_200_status)
+{
+    ngx_str_t                        schema, ctype, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("https");
+    ctype = str("application/json");
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_directory_check_response(&schema, 404, &ctype,
+            &media, 3, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_STATUS, reason);
+
+    return 0;
+}
+
+
+TEST(directory_check_response_rejects_mismatched_media_type)
+{
+    ngx_str_t                        schema, ctype, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("https");
+    ctype = str("text/plain");
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_directory_check_response(&schema, 200, &ctype,
+            &media, 3, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_MEDIA_TYPE, reason);
+
+    return 0;
+}
+
+
+TEST(directory_check_response_rejects_missing_content_type)
+{
+    ngx_str_t                        schema, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("https");
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_directory_check_response(&schema, 200, NULL,
+            &media, 3, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_MEDIA_TYPE, reason);
+
+    return 0;
+}
+
+
+TEST(directory_check_response_rejects_oversized_body)
+{
+    ngx_str_t                        schema, ctype, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("https");
+    ctype = str("application/json");
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_directory_check_response(&schema, 200, &ctype,
+            &media, 65, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_TOO_LARGE, reason);
+
+    return 0;
+}
+
+
+TEST(directory_check_response_rejects_empty_body)
+{
+    ngx_str_t                        schema, ctype, media;
+    ngx_auth_httpsig_fetch_reason_t  reason;
+
+    schema = str("https");
+    ctype = str("application/json");
+    media = str(TEST_MEDIA_TYPE);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_directory_check_response(&schema, 200, &ctype,
+            &media, 0, 64, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_FETCH_EMPTY, reason);
+
+    return 0;
+}
+
+
 TEST_SUITE(directory)
 {
     RUN(directory_normalize_lowercases);
@@ -384,4 +549,13 @@ TEST_SUITE(directory)
     RUN(directory_ttl_s_maxage_takes_priority);
     RUN(directory_ttl_overflow_saturates_to_ceiling);
     RUN(directory_ttl_age_is_subtracted);
+    RUN(directory_check_response_accepts_profile_media_type);
+    RUN(directory_check_response_accepts_application_json);
+    RUN(directory_check_response_rejects_non_https_schema);
+    RUN(directory_check_response_rejects_redirect_status);
+    RUN(directory_check_response_rejects_non_200_status);
+    RUN(directory_check_response_rejects_mismatched_media_type);
+    RUN(directory_check_response_rejects_missing_content_type);
+    RUN(directory_check_response_rejects_oversized_body);
+    RUN(directory_check_response_rejects_empty_body);
 }

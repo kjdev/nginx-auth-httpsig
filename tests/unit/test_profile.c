@@ -97,7 +97,7 @@ build_fixture(ngx_pool_t *pool, profile_fixture_t *fx)
         return NGX_ERROR;
     }
 
-    if (ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, &fx->keys)
+    if (ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, &fx->keys)
         != NGX_OK)
     {
         return NGX_ERROR;
