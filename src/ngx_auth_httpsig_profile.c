@@ -60,6 +60,11 @@ static ngx_int_t ngx_auth_httpsig_profile_extract_params(
     const ngx_array_t *params, ngx_auth_httpsig_signature_t *sig);
 static ngx_uint_t ngx_auth_httpsig_profile_covered_components(
     const ngx_array_t *items);
+static ngx_int_t ngx_auth_httpsig_profile_agent_bounds(ngx_pool_t *pool,
+    const ngx_str_t *raw, u_char **host_start, u_char **host_end,
+    u_char **authority_end);
+static void ngx_auth_httpsig_profile_agent_copy(ngx_pool_t *pool,
+    u_char *start, u_char *end, ngx_str_t *out);
 
 
 const ngx_auth_httpsig_profile_t *
@@ -475,19 +480,23 @@ ngx_auth_httpsig_profile_covered_components(const ngx_array_t *items)
  * Either way, the reconstructed signature base string uses the raw
  * field value unchanged, so this ambiguity never affects verification
  * -- only $httpsig_agent / key-directory host extraction.
+ *
+ * Locates the host and authority (host, plus ":<port>" if present)
+ * spans within `raw`'s underlying https URL, leaving all three
+ * pointers unset unless it parses as such. Shared by
+ * ngx_auth_httpsig_profile_agent_host() (host only, for
+ * $httpsig_agent) and ngx_auth_httpsig_profile_agent_authority() (full
+ * authority, for key-directory allow-list matching and dialing).
  */
-void
-ngx_auth_httpsig_profile_agent_host(ngx_pool_t *pool,
-    const ngx_str_t *raw, ngx_str_t *out)
+static ngx_int_t
+ngx_auth_httpsig_profile_agent_bounds(ngx_pool_t *pool,
+    const ngx_str_t *raw, u_char **host_start, u_char **host_end,
+    u_char **authority_end)
 {
     ngx_auth_httpsig_sfv_item_t *item;
     ngx_auth_httpsig_sfv_error_t err;
-    ngx_str_t url, host;
-    u_char *host_start, *host_end, *authority_end, *end, *p;
-    ngx_uint_t i;
-
-    out->len = 0;
-    out->data = NULL;
+    ngx_str_t url;
+    u_char *start, *end_of_authority, *end, *p;
 
     if (ngx_auth_httpsig_sfv_parse_item(pool, raw, &item, &err) == NGX_OK
         && item->bare.type == NGX_AUTH_HTTPSIG_SFV_STRING)
@@ -500,94 +509,152 @@ ngx_auth_httpsig_profile_agent_host(ngx_pool_t *pool,
     if (url.len < 8
         || ngx_strncasecmp(url.data, (u_char *) "https://", 8) != 0)
     {
-        return;
+        return NGX_DECLINED;
     }
 
     end = url.data + url.len;
-    host_start = url.data + 8;
-    authority_end = host_start;
+    start = url.data + 8;
+    end_of_authority = start;
 
-    while (authority_end < end && *authority_end != '/'
-           && *authority_end != '?' && *authority_end != '#')
+    while (end_of_authority < end && *end_of_authority != '/'
+           && *end_of_authority != '?' && *end_of_authority != '#')
     {
-        authority_end++;
+        end_of_authority++;
     }
 
     /* strip userinfo: host starts after the last '@' in the authority */
-    for (p = authority_end; p > host_start; p--) {
+    for (p = end_of_authority; p > start; p--) {
         if (*(p - 1) == '@') {
-            host_start = p;
+            start = p;
             break;
         }
     }
 
-    if (host_start >= authority_end) {
-        return;
+    if (start >= end_of_authority) {
+        return NGX_DECLINED;
     }
 
-    if (*host_start == '[') {
-        /* bracketed IPv6 literal: host runs up to the matching ']' */
-        host_end = host_start + 1;
+    *host_start = start;
 
-        while (host_end < authority_end && *host_end != ']') {
-            if (!((*host_end >= '0' && *host_end <= '9')
-                  || (*host_end >= 'a' && *host_end <= 'f')
-                  || (*host_end >= 'A' && *host_end <= 'F')
-                  || *host_end == ':'))
+    if (*start == '[') {
+        /* bracketed IPv6 literal: host runs up to the matching ']' */
+        *host_end = start + 1;
+
+        while (*host_end < end_of_authority && **host_end != ']') {
+            if (!((**host_end >= '0' && **host_end <= '9')
+                  || (**host_end >= 'a' && **host_end <= 'f')
+                  || (**host_end >= 'A' && **host_end <= 'F')
+                  || **host_end == ':'))
             {
-                return;
+                return NGX_DECLINED;
             }
 
-            host_end++;
+            (*host_end)++;
         }
 
-        if (host_end >= authority_end || host_end == host_start + 1) {
-            return;
+        if (*host_end >= end_of_authority || *host_end == start + 1) {
+            return NGX_DECLINED;
         }
 
-        host_end++;
+        (*host_end)++;
 
     } else {
-        host_end = host_start;
+        *host_end = start;
 
-        while (host_end < authority_end && *host_end != ':') {
-            if (!((*host_end >= 'a' && *host_end <= 'z')
-                  || (*host_end >= 'A' && *host_end <= 'Z')
-                  || (*host_end >= '0' && *host_end <= '9')
-                  || *host_end == '-' || *host_end == '.'))
+        while (*host_end < end_of_authority && **host_end != ':') {
+            if (!((**host_end >= 'a' && **host_end <= 'z')
+                  || (**host_end >= 'A' && **host_end <= 'Z')
+                  || (**host_end >= '0' && **host_end <= '9')
+                  || **host_end == '-' || **host_end == '.'))
             {
-                return;
+                return NGX_DECLINED;
             }
 
-            host_end++;
+            (*host_end)++;
         }
     }
 
-    if (host_end < authority_end) {
-        if (*host_end != ':' || host_end + 1 == authority_end) {
-            return;
+    if (*host_end < end_of_authority) {
+        if (**host_end != ':' || *host_end + 1 == end_of_authority) {
+            return NGX_DECLINED;
         }
 
-        for (p = host_end + 1; p < authority_end; p++) {
+        for (p = *host_end + 1; p < end_of_authority; p++) {
             if (*p < '0' || *p > '9') {
-                return;
+                return NGX_DECLINED;
             }
         }
     }
 
-    host.len = (size_t) (host_end - host_start);
-    if (host.len == 0) {
+    if (*host_end == *host_start) {
+        return NGX_DECLINED;
+    }
+
+    *authority_end = end_of_authority;
+
+    return NGX_OK;
+}
+
+
+/* Lowercases [start, end) into a freshly allocated `out`. */
+static void
+ngx_auth_httpsig_profile_agent_copy(ngx_pool_t *pool, u_char *start,
+    u_char *end, ngx_str_t *out)
+{
+    ngx_str_t value;
+    ngx_uint_t i;
+
+    value.len = (size_t) (end - start);
+
+    value.data = ngx_pnalloc(pool, value.len);
+    if (value.data == NULL) {
         return;
     }
 
-    host.data = ngx_pnalloc(pool, host.len);
-    if (host.data == NULL) {
+    for (i = 0; i < value.len; i++) {
+        value.data[i] = ngx_tolower(start[i]);
+    }
+
+    *out = value;
+}
+
+
+void
+ngx_auth_httpsig_profile_agent_host(ngx_pool_t *pool,
+    const ngx_str_t *raw, ngx_str_t *out)
+{
+    u_char *host_start, *host_end, *authority_end;
+
+    out->len = 0;
+    out->data = NULL;
+
+    if (ngx_auth_httpsig_profile_agent_bounds(pool, raw, &host_start,
+                                              &host_end, &authority_end)
+        != NGX_OK)
+    {
         return;
     }
 
-    for (i = 0; i < host.len; i++) {
-        host.data[i] = ngx_tolower(host_start[i]);
+    ngx_auth_httpsig_profile_agent_copy(pool, host_start, host_end, out);
+}
+
+
+void
+ngx_auth_httpsig_profile_agent_authority(ngx_pool_t *pool,
+    const ngx_str_t *raw, ngx_str_t *out)
+{
+    u_char *host_start, *host_end, *authority_end;
+
+    out->len = 0;
+    out->data = NULL;
+
+    if (ngx_auth_httpsig_profile_agent_bounds(pool, raw, &host_start,
+                                              &host_end, &authority_end)
+        != NGX_OK)
+    {
+        return;
     }
 
-    *out = host;
+    ngx_auth_httpsig_profile_agent_copy(pool, host_start, authority_end,
+                                        out);
 }

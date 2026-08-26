@@ -1207,8 +1207,8 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    ngx_auth_httpsig_profile_agent_host(r->pool, &sig_agent->value,
-                                        &agent_host);
+    ngx_auth_httpsig_profile_agent_authority(r->pool, &sig_agent->value,
+                                             &agent_host);
 
     if (agent_host.len == 0
         || ngx_auth_httpsig_directory_normalize_host(r->pool, &agent_host,

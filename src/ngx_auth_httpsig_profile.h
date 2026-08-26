@@ -146,13 +146,23 @@ ngx_int_t ngx_auth_httpsig_profile_match(
     ngx_auth_httpsig_result_t *result);
 
 /*
- * Extracts the lowercased host portion of a raw Signature-Agent field
- * value, leaving `out` empty unless the value is an https URL. Exposed
- * so the key-directory fetch path can derive a host from an
- * as-yet-unverified Signature-Agent value, before signature
- * verification has run.
+ * Extracts the lowercased host (no port) of a raw Signature-Agent
+ * field value, leaving `out` empty unless the value is an https URL.
+ * Exposed so $httpsig_agent can be derived from an as-yet-unverified
+ * Signature-Agent value, before signature verification has run.
  */
 void ngx_auth_httpsig_profile_agent_host(ngx_pool_t *pool,
+    const ngx_str_t *raw, ngx_str_t *out);
+
+/*
+ * Extracts the lowercased authority (host, plus ":<port>" if present)
+ * of a raw Signature-Agent field value, leaving `out` empty unless the
+ * value is an https URL. Exposed so the key-directory fetch path can
+ * match it against "auth_httpsig_trusted_agent" entries and dial it
+ * directly, both of which need the exact authority, not just the
+ * hostname.
+ */
+void ngx_auth_httpsig_profile_agent_authority(ngx_pool_t *pool,
     const ngx_str_t *raw, ngx_str_t *out);
 
 
