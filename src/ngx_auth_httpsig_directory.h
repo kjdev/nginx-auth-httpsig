@@ -26,6 +26,20 @@ typedef enum {
     NGX_AUTH_HTTPSIG_HOST_INVALID_CHAR
 } ngx_auth_httpsig_host_reason_t;
 
+/* Why ngx_auth_httpsig_directory_check_response() rejected a
+ * key-directory response; meaningful only when that function returns
+ * NGX_DECLINED. Doubles as the failure classification for a future
+ * $httpsig_error (WP6). */
+typedef enum {
+    NGX_AUTH_HTTPSIG_FETCH_OK = 0,
+    NGX_AUTH_HTTPSIG_FETCH_NOT_HTTPS,
+    NGX_AUTH_HTTPSIG_FETCH_REDIRECT,
+    NGX_AUTH_HTTPSIG_FETCH_STATUS,
+    NGX_AUTH_HTTPSIG_FETCH_MEDIA_TYPE,
+    NGX_AUTH_HTTPSIG_FETCH_TOO_LARGE,
+    NGX_AUTH_HTTPSIG_FETCH_EMPTY
+} ngx_auth_httpsig_fetch_reason_t;
+
 
 /*
  * Normalizes a bare "host[:port]" argument (auth_httpsig_trusted_agent,
@@ -82,6 +96,29 @@ ngx_flag_t ngx_auth_httpsig_directory_allowed(const ngx_array_t *allow,
  */
 time_t ngx_auth_httpsig_directory_ttl(const ngx_str_t *cache_control,
     time_t age, time_t min_ttl, time_t max_ttl);
+
+/*
+ * Checks a fetched key-directory response against the acceptance
+ * rules: HTTPS only (ADR 0012), no redirect followed (a 3xx is an
+ * explicit rejection, not a transport failure), 200 status only,
+ * Content-Type matches `media_type` or "application/json" (ignoring
+ * a ";charset=..." suffix and case), and the body is non-empty and
+ * within `max_size`.
+ *
+ * `schema` is the scheme the response was actually fetched over (e.g.
+ * an upstream's r->upstream->schema); `content_type` may be NULL or
+ * empty (header absent, which never matches).
+ *
+ * Return value:
+ *   NGX_OK        the response is accepted; `*reason` is
+ *                 NGX_AUTH_HTTPSIG_FETCH_OK.
+ *   NGX_DECLINED  the response is rejected; `*reason` explains why.
+ *   NGX_ERROR     `schema` or `reason` is NULL.
+ */
+ngx_int_t ngx_auth_httpsig_directory_check_response(const ngx_str_t *schema,
+    ngx_uint_t status, const ngx_str_t *content_type,
+    const ngx_str_t *media_type, size_t body_len, size_t max_size,
+    ngx_auth_httpsig_fetch_reason_t *reason);
 
 
 #endif /* NGX_AUTH_HTTPSIG_DIRECTORY_H */

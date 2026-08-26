@@ -304,6 +304,74 @@ ngx_auth_httpsig_directory_parse_uint(u_char *p, size_t len,
 }
 
 
+ngx_int_t
+ngx_auth_httpsig_directory_check_response(const ngx_str_t *schema,
+    ngx_uint_t status, const ngx_str_t *content_type,
+    const ngx_str_t *media_type, size_t body_len, size_t max_size,
+    ngx_auth_httpsig_fetch_reason_t *reason)
+{
+    ngx_str_t type;
+    size_t i;
+
+    if (schema == NULL || reason == NULL) {
+        return NGX_ERROR;
+    }
+
+    *reason = NGX_AUTH_HTTPSIG_FETCH_OK;
+
+    if (schema->len != 5 || ngx_strncasecmp(schema->data, (u_char *) "https", 5)
+        != 0)
+    {
+        *reason = NGX_AUTH_HTTPSIG_FETCH_NOT_HTTPS;
+        return NGX_DECLINED;
+    }
+
+    if (status >= 300 && status <= 399) {
+        *reason = NGX_AUTH_HTTPSIG_FETCH_REDIRECT;
+        return NGX_DECLINED;
+    }
+
+    if (status != 200) {
+        *reason = NGX_AUTH_HTTPSIG_FETCH_STATUS;
+        return NGX_DECLINED;
+    }
+
+    type.data = (content_type != NULL) ? content_type->data : NULL;
+    type.len = (content_type != NULL) ? content_type->len : 0;
+
+    for (i = 0; i < type.len; i++) {
+        if (type.data[i] == ';') {
+            type.len = i;
+            break;
+        }
+    }
+
+    ngx_auth_httpsig_directory_trim(&type);
+
+    if (type.len == 0
+        || !((media_type != NULL && media_type->len > 0
+              && type.len == media_type->len
+              && ngx_strncasecmp(type.data, media_type->data, type.len) == 0)
+             || ngx_auth_httpsig_directory_token_is(&type, "application/json")))
+    {
+        *reason = NGX_AUTH_HTTPSIG_FETCH_MEDIA_TYPE;
+        return NGX_DECLINED;
+    }
+
+    if (body_len > max_size) {
+        *reason = NGX_AUTH_HTTPSIG_FETCH_TOO_LARGE;
+        return NGX_DECLINED;
+    }
+
+    if (body_len == 0) {
+        *reason = NGX_AUTH_HTTPSIG_FETCH_EMPTY;
+        return NGX_DECLINED;
+    }
+
+    return NGX_OK;
+}
+
+
 static ngx_int_t
 ngx_auth_httpsig_directory_parse_directive(const ngx_str_t *token,
     const char *name, time_t *value)
