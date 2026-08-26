@@ -404,6 +404,62 @@ TEST(profile_agent_host_rejects_invalid_bracketed_bytes)
 }
 
 
+TEST(profile_agent_authority_keeps_port)
+{
+    ngx_str_t  raw, authority;
+
+    raw = str("\"https://Example.COM:443/agents/1\"");
+
+    ngx_auth_httpsig_profile_agent_authority(pool, &raw, &authority);
+
+    ASSERT_STR_EQ(authority, "example.com:443");
+
+    return 0;
+}
+
+
+TEST(profile_agent_authority_omits_absent_port)
+{
+    ngx_str_t  raw, authority;
+
+    raw = str("\"https://Example.COM/agents/1\"");
+
+    ngx_auth_httpsig_profile_agent_authority(pool, &raw, &authority);
+
+    ASSERT_STR_EQ(authority, "example.com");
+
+    return 0;
+}
+
+
+TEST(profile_agent_authority_keeps_bracketed_ipv6_port)
+{
+    ngx_str_t  raw, authority;
+
+    raw = str("\"https://[2001:DB8::1]:8443/agents/1\"");
+
+    ngx_auth_httpsig_profile_agent_authority(pool, &raw, &authority);
+
+    ASSERT_STR_EQ(authority, "[2001:db8::1]:8443");
+
+    return 0;
+}
+
+
+TEST(profile_agent_authority_rejects_non_https)
+{
+    ngx_str_t  raw, authority;
+
+    raw = str("\"http://example.com\"");
+
+    ngx_auth_httpsig_profile_agent_authority(pool, &raw, &authority);
+
+    ASSERT_EQ_INT(0, authority.len);
+
+    return 0;
+}
+
+
 TEST(profile_tag_mismatch_is_not_signed)
 {
     profile_fixture_t               fx;
@@ -710,6 +766,10 @@ TEST_SUITE(profile)
     RUN(profile_agent_host_rejects_invalid_bytes);
     RUN(profile_agent_host_extracts_bracketed_ipv6);
     RUN(profile_agent_host_rejects_invalid_bracketed_bytes);
+    RUN(profile_agent_authority_keeps_port);
+    RUN(profile_agent_authority_omits_absent_port);
+    RUN(profile_agent_authority_keeps_bracketed_ipv6_port);
+    RUN(profile_agent_authority_rejects_non_https);
     RUN(profile_tag_mismatch_is_not_signed);
     RUN(profile_missing_required_param_is_mismatch);
     RUN(profile_missing_authority_and_target_uri_is_mismatch);
