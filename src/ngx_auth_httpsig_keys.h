@@ -5,8 +5,9 @@
  * ngx_auth_httpsig_keys.h - verification key resolution. Wraps a JWKS
  * document behind a source table (has / verify / free) instead of
  * exposing key material directly, so the caller never touches an
- * EVP_PKEY. A future dynamic directory fetch can plug in by adding a
- * second ngx_auth_httpsig_keys_source_t and leaving this API unchanged.
+ * EVP_PKEY. The dynamic key-directory fetch plugs in as a second
+ * ngx_auth_httpsig_keys_source_t (the "jwks" source, reused as-is) and
+ * ngx_auth_httpsig_keys_chain() combines it with the static keyset.
  */
 
 #ifndef NGX_AUTH_HTTPSIG_KEYS_H
@@ -59,11 +60,17 @@ struct ngx_auth_httpsig_keys_s {
  * `origin` is copied for use in log messages (e.g. the configured file
  * path); it may be NULL.
  *
+ * `log_level` is the ngx_log_error() level used for a rejected
+ * document. Configuration loading passes NGX_LOG_EMERG; a dynamically
+ * fetched document -- content an unauthenticated remote party
+ * controls -- passes NGX_LOG_WARN instead, so a malformed response
+ * cannot be used to flood the error log at EMERG.
+ *
  * Return value:
  *   NGX_OK     `*out` holds the loaded keyset, pool-allocated.
  *   NGX_ERROR  the document is missing, too large, exceeds the key
  *              count limit, contains a non-Ed25519 key, or failed to
- *              parse. Details are logged at NGX_LOG_EMERG.
+ *              parse. Details are logged at `log_level`.
  *
  * The caller is responsible for releasing `*out` with
  * ngx_auth_httpsig_keys_free() before `pool` is destroyed, if `pool`
@@ -72,7 +79,7 @@ struct ngx_auth_httpsig_keys_s {
  */
 ngx_int_t ngx_auth_httpsig_keys_load_jwks(ngx_pool_t *pool,
     const ngx_str_t *jwks_json, const ngx_str_t *origin,
-    ngx_auth_httpsig_keys_t **out);
+    ngx_uint_t log_level, ngx_auth_httpsig_keys_t **out);
 
 /* Reports whether `keys` holds a key identified by `keyid` (an RFC 7638
  * thumbprint). Returns 0 if `keys` or `keyid` is NULL. */
@@ -97,6 +104,25 @@ ngx_int_t ngx_auth_httpsig_keys_verify(const ngx_auth_httpsig_keys_t *keys,
 /* Releases the keyset's underlying key material. Safe to call with
  * NULL; safe to call more than once. */
 void ngx_auth_httpsig_keys_free(ngx_auth_httpsig_keys_t *keys);
+
+/*
+ * Combines two keysets into one that tries `first` before `second` for
+ * both ngx_auth_httpsig_keys_has() and ngx_auth_httpsig_keys_verify().
+ * Intended for a dynamically fetched keyset (`first`) falling back to
+ * the statically configured one (`second`), so an origin that serves a
+ * key directory takes priority over a stale static entry for the same
+ * keyid.
+ *
+ * Neither `first` nor `second` is freed by the combined keyset's
+ * ngx_auth_httpsig_keys_free() -- ownership stays with whoever loaded
+ * them.
+ *
+ * Returns `second` if `first` is NULL, `first` if `second` is NULL, a
+ * combined keyset otherwise, or NULL if `pool` is NULL or allocation
+ * fails.
+ */
+ngx_auth_httpsig_keys_t *ngx_auth_httpsig_keys_chain(ngx_pool_t *pool,
+    ngx_auth_httpsig_keys_t *first, ngx_auth_httpsig_keys_t *second);
 
 
 #endif /* NGX_AUTH_HTTPSIG_KEYS_H */

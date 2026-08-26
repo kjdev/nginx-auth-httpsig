@@ -27,7 +27,7 @@
 
 
 static ngx_int_t ngx_auth_httpsig_keys_check_ed25519_only(
-    const ngx_str_t *jwks_json, ngx_pool_t *pool);
+    const ngx_str_t *jwks_json, ngx_pool_t *pool, ngx_uint_t log_level);
 
 static ngx_flag_t ngx_auth_httpsig_keys_jwks_has(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid);
@@ -35,6 +35,13 @@ static ngx_int_t ngx_auth_httpsig_keys_jwks_verify(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid,
     const ngx_str_t *msg, const ngx_str_t *sig, ngx_pool_t *pool);
 static void ngx_auth_httpsig_keys_jwks_free(ngx_auth_httpsig_keys_t *keys);
+
+static ngx_flag_t ngx_auth_httpsig_keys_chain_has(
+    const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid);
+static ngx_int_t ngx_auth_httpsig_keys_chain_verify(
+    const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid,
+    const ngx_str_t *msg, const ngx_str_t *sig, ngx_pool_t *pool);
+static void ngx_auth_httpsig_keys_chain_free(ngx_auth_httpsig_keys_t *keys);
 
 
 static const ngx_auth_httpsig_keys_source_t
@@ -46,11 +53,25 @@ static const ngx_auth_httpsig_keys_source_t
     ngx_auth_httpsig_keys_jwks_free
 };
 
+static const ngx_auth_httpsig_keys_source_t
+    ngx_auth_httpsig_keys_chain_source =
+{
+    ngx_string("chain"),
+    ngx_auth_httpsig_keys_chain_has,
+    ngx_auth_httpsig_keys_chain_verify,
+    ngx_auth_httpsig_keys_chain_free
+};
+
+typedef struct {
+    ngx_auth_httpsig_keys_t *first;
+    ngx_auth_httpsig_keys_t *second;
+} ngx_auth_httpsig_keys_chain_data_t;
+
 
 ngx_int_t
 ngx_auth_httpsig_keys_load_jwks(ngx_pool_t *pool,
     const ngx_str_t *jwks_json, const ngx_str_t *origin,
-    ngx_auth_httpsig_keys_t **out)
+    ngx_uint_t log_level, ngx_auth_httpsig_keys_t **out)
 {
     nxe_jwx_jwks_t *jwks;
     ngx_auth_httpsig_keys_t *keys;
@@ -60,13 +81,13 @@ ngx_auth_httpsig_keys_load_jwks(ngx_pool_t *pool,
     }
 
     if (jwks_json->len > NGX_AUTH_HTTPSIG_MAX_JWKS_SIZE) {
-        ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+        ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: JWKS document exceeds %ui bytes",
                       (ngx_uint_t) NGX_AUTH_HTTPSIG_MAX_JWKS_SIZE);
         return NGX_ERROR;
     }
 
-    if (ngx_auth_httpsig_keys_check_ed25519_only(jwks_json, pool)
+    if (ngx_auth_httpsig_keys_check_ed25519_only(jwks_json, pool, log_level)
         != NGX_OK)
     {
         return NGX_ERROR;
@@ -74,7 +95,7 @@ ngx_auth_httpsig_keys_load_jwks(ngx_pool_t *pool,
 
     jwks = nxe_jwx_jwks_parse(jwks_json, pool);
     if (jwks == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+        ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: failed to parse JWKS document");
         return NGX_ERROR;
     }
@@ -144,6 +165,46 @@ ngx_auth_httpsig_keys_free(ngx_auth_httpsig_keys_t *keys)
 }
 
 
+ngx_auth_httpsig_keys_t *
+ngx_auth_httpsig_keys_chain(ngx_pool_t *pool, ngx_auth_httpsig_keys_t *first,
+    ngx_auth_httpsig_keys_t *second)
+{
+    ngx_auth_httpsig_keys_t *keys;
+    ngx_auth_httpsig_keys_chain_data_t *data;
+
+    if (pool == NULL) {
+        return NULL;
+    }
+
+    if (first == NULL) {
+        return second;
+    }
+
+    if (second == NULL) {
+        return first;
+    }
+
+    data = ngx_palloc(pool, sizeof(ngx_auth_httpsig_keys_chain_data_t));
+    if (data == NULL) {
+        return NULL;
+    }
+
+    data->first = first;
+    data->second = second;
+
+    keys = ngx_pcalloc(pool, sizeof(ngx_auth_httpsig_keys_t));
+    if (keys == NULL) {
+        return NULL;
+    }
+
+    keys->source = &ngx_auth_httpsig_keys_chain_source;
+    keys->data = data;
+    keys->count = first->count + second->count;
+
+    return keys;
+}
+
+
 /*
  * nxe_jwx_jwks_parse() accepts RSA / EC / OKP keys interchangeably and
  * skips unsupported entries with a warning instead of failing, so it
@@ -156,7 +217,7 @@ ngx_auth_httpsig_keys_free(ngx_auth_httpsig_keys_t *keys)
  */
 static ngx_int_t
 ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
-    ngx_pool_t *pool)
+    ngx_pool_t *pool, ngx_uint_t log_level)
 {
     size_t i, n;
     ngx_str_t kty, crv;
@@ -165,13 +226,13 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
 
     root = nxe_json_parse((ngx_str_t *) jwks_json, pool);
     if (root == NULL) {
-        ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+        ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: JWKS document is not valid JSON");
         return NGX_ERROR;
     }
 
     if (!nxe_json_is_object(root)) {
-        ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+        ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: JWKS document is not a JSON object");
         nxe_json_free(root);
         return NGX_ERROR;
@@ -179,7 +240,7 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
 
     keys = nxe_json_object_get(root, "keys");
     if (keys == NULL || !nxe_json_is_array(keys)) {
-        ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+        ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: JWKS document has no \"keys\" array");
         nxe_json_free(root);
         return NGX_ERROR;
@@ -188,7 +249,7 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
     n = nxe_json_array_size(keys);
 
     if (n > NGX_AUTH_HTTPSIG_MAX_JWKS_KEYS) {
-        ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+        ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: JWKS document has more than %ui keys",
                       (ngx_uint_t) NGX_AUTH_HTTPSIG_MAX_JWKS_KEYS);
         nxe_json_free(root);
@@ -204,7 +265,7 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
             || kty.len != sizeof("OKP") - 1
             || ngx_strncmp(kty.data, "OKP", kty.len) != 0)
         {
-            ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+            ngx_log_error(log_level, pool->log, 0,
                           "auth_httpsig: JWKS key %ui is not an Ed25519 "
                           "(OKP) key; only Ed25519 keys are supported",
                           (ngx_uint_t) i);
@@ -218,7 +279,7 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
             || crv.len != sizeof("Ed25519") - 1
             || ngx_strncmp(crv.data, "Ed25519", crv.len) != 0)
         {
-            ngx_log_error(NGX_LOG_EMERG, pool->log, 0,
+            ngx_log_error(log_level, pool->log, 0,
                           "auth_httpsig: JWKS key %ui does not use the "
                           "Ed25519 curve", (ngx_uint_t) i);
             nxe_json_free(root);
@@ -253,4 +314,47 @@ static void
 ngx_auth_httpsig_keys_jwks_free(ngx_auth_httpsig_keys_t *keys)
 {
     nxe_jwx_jwks_free(keys->data);
+}
+
+
+static ngx_flag_t
+ngx_auth_httpsig_keys_chain_has(const ngx_auth_httpsig_keys_t *keys,
+    const ngx_str_t *keyid)
+{
+    ngx_auth_httpsig_keys_chain_data_t *data = keys->data;
+
+    return ngx_auth_httpsig_keys_has(data->first, keyid)
+           || ngx_auth_httpsig_keys_has(data->second, keyid);
+}
+
+
+/*
+ * Falls through from `first` to `second` on any NGX_DECLINED, including
+ * "signature did not verify" -- not only "no such keyid" -- since the
+ * two are indistinguishable by design (oracle resistance). This only
+ * matters if the same keyid exists in both keysets, which the RFC 7638
+ * thumbprint keying makes practically impossible for two different
+ * public keys.
+ */
+static ngx_int_t
+ngx_auth_httpsig_keys_chain_verify(const ngx_auth_httpsig_keys_t *keys,
+    const ngx_str_t *keyid, const ngx_str_t *msg, const ngx_str_t *sig,
+    ngx_pool_t *pool)
+{
+    ngx_auth_httpsig_keys_chain_data_t *data = keys->data;
+    ngx_int_t rc;
+
+    rc = ngx_auth_httpsig_keys_verify(data->first, keyid, msg, sig, pool);
+    if (rc == NGX_OK) {
+        return NGX_OK;
+    }
+
+    return ngx_auth_httpsig_keys_verify(data->second, keyid, msg, sig, pool);
+}
+
+
+/* Ownership of `first`/`second` stays with whoever loaded them. */
+static void
+ngx_auth_httpsig_keys_chain_free(ngx_auth_httpsig_keys_t *keys)
+{
 }
