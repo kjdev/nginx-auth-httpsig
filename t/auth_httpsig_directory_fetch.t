@@ -184,8 +184,8 @@ sub sign_headers {
         . "Signature: $sig\n";
 }
 
-# Cache-TTL-reuse/refetch assertions depend on TEST 1/2/4/5/8/9 running in
-# file order; Test::Nginx shuffles block order by default.
+# Cache-TTL-reuse/refetch assertions depend on TEST 1/2/4/5/8/9/10/11 running
+# in file order; Test::Nginx shuffles block order by default.
 no_shuffle();
 
 run_tests();
@@ -341,3 +341,20 @@ my $headers = main::sign_headers('127.0.0.1:18448');
 [200, 200]
 --- response_body eval
 ["verified:1 error:", "verified:1 error:"]
+
+
+
+=== TEST 11: the concurrent requests in TEST 10 triggered only one fetch
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18443')
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18448 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18448 GET /.well-known/http-message-signatures-directory
