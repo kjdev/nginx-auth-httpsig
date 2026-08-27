@@ -42,16 +42,16 @@
 
 
 typedef struct {
-    ngx_pool_t               *pool;        /* NULL: slot is free */
-    ngx_str_t                 host;        /* copied into pool */
-    ngx_uint_t                generation;
-    ngx_auth_httpsig_keys_t  *keys;
-    ngx_uint_t                touched;
+    ngx_pool_t              *pool;         /* NULL: slot is free */
+    ngx_str_t                host;         /* copied into pool */
+    ngx_uint_t               generation;
+    ngx_auth_httpsig_keys_t *keys;
+    ngx_uint_t               touched;
 } ngx_auth_httpsig_keys_cache_slot_t;
 
 struct ngx_auth_httpsig_keys_cache_s {
     ngx_auth_httpsig_keys_cache_slot_t
-        slots[NGX_AUTH_HTTPSIG_MAX_KEYS_CACHE_ENTRIES];
+                slots[NGX_AUTH_HTTPSIG_MAX_KEYS_CACHE_ENTRIES];
     ngx_uint_t  clock;    /* incremented on every touch; the slot with
                            * the smallest `touched` is the LRU victim */
 };
@@ -60,7 +60,7 @@ struct ngx_auth_httpsig_keys_cache_s {
 static ngx_auth_httpsig_keys_cache_slot_t *ngx_auth_httpsig_keys_cache_find(
     ngx_auth_httpsig_keys_cache_t *kc, const ngx_str_t *host);
 static ngx_auth_httpsig_keys_cache_slot_t *
-    ngx_auth_httpsig_keys_cache_slot_for(ngx_auth_httpsig_keys_cache_t *kc,
+ngx_auth_httpsig_keys_cache_slot_for(ngx_auth_httpsig_keys_cache_t *kc,
     const ngx_str_t *host);
 static void ngx_auth_httpsig_keys_cache_evict(
     ngx_auth_httpsig_keys_cache_slot_t *slot);
@@ -134,7 +134,7 @@ ngx_auth_httpsig_keys_cache_put(ngx_auth_httpsig_keys_cache_t *kc,
     }
 
     entry_pool = ngx_create_pool(NGX_AUTH_HTTPSIG_KEYS_CACHE_POOL_SIZE,
-                                  ngx_cycle->log);
+                                 ngx_cycle->log);
     if (entry_pool == NULL) {
         return NGX_ERROR;
     }
@@ -146,7 +146,7 @@ ngx_auth_httpsig_keys_cache_put(ngx_auth_httpsig_keys_cache_t *kc,
     entry_pool->log = log;
 
     rc = ngx_auth_httpsig_keys_load_jwks(entry_pool, jwks, host,
-                                          NGX_LOG_WARN, &parsed);
+                                         NGX_LOG_WARN, &parsed);
 
     entry_pool->log = saved_log;
 

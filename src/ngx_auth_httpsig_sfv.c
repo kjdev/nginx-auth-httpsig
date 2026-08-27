@@ -197,8 +197,8 @@ ngx_auth_httpsig_sfv_read_string(ngx_auth_httpsig_sfv_ctx_t *ctx,
     ngx_str_t *out)
 {
     const u_char *start, *p;
-    u_char       *buf, *d, c;
-    ngx_uint_t    escapes;
+    u_char *buf, *d, c;
+    ngx_uint_t escapes;
 
     if (ctx->pos >= ctx->last || *ctx->pos != '"') {
         return ngx_auth_httpsig_sfv_fail(ctx, "invalid string");
