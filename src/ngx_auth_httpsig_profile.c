@@ -490,8 +490,8 @@ ngx_auth_httpsig_profile_covered_components(const ngx_array_t *items)
  * -- only $httpsig_agent / key-directory host extraction.
  *
  * Locates the host and authority (host, plus ":<port>" if present)
- * spans within `raw`'s underlying https URL, leaving all three
- * pointers unset unless it parses as such. Shared by
+ * spans within `raw`'s underlying https URL. The output pointers are
+ * only set when this returns NGX_OK.  Shared by
  * ngx_auth_httpsig_profile_agent_host() (host only, for
  * $httpsig_agent) and ngx_auth_httpsig_profile_agent_authority() (full
  * authority, for key-directory allow-list matching and dialing).
@@ -502,11 +502,10 @@ ngx_auth_httpsig_profile_agent_bounds(ngx_pool_t *pool,
     u_char **authority_end)
 {
     ngx_auth_httpsig_sfv_item_t *item;
-    ngx_auth_httpsig_sfv_error_t err;
     ngx_str_t url;
-    u_char *start, *end_of_authority, *end, *p;
+    u_char *start, *end_of_authority, *end, *p, *host_begin, *host_stop;
 
-    if (ngx_auth_httpsig_sfv_parse_item(pool, raw, &item, &err) == NGX_OK
+    if (ngx_auth_httpsig_sfv_parse_item(pool, raw, &item, NULL) == NGX_OK
         && item->bare.type == NGX_AUTH_HTTPSIG_SFV_STRING)
     {
         url = item->bare.value;
@@ -542,62 +541,66 @@ ngx_auth_httpsig_profile_agent_bounds(ngx_pool_t *pool,
         return NGX_DECLINED;
     }
 
-    *host_start = start;
+    host_begin = start;
 
     if (*start == '[') {
         /* bracketed IPv6 literal: host runs up to the matching ']' */
-        *host_end = start + 1;
+        p = start + 1;
 
-        while (*host_end < end_of_authority && **host_end != ']') {
-            if (!((**host_end >= '0' && **host_end <= '9')
-                  || (**host_end >= 'a' && **host_end <= 'f')
-                  || (**host_end >= 'A' && **host_end <= 'F')
-                  || **host_end == ':'))
+        while (p < end_of_authority && *p != ']') {
+            if (!((*p >= '0' && *p <= '9')
+                  || (*p >= 'a' && *p <= 'f')
+                  || (*p >= 'A' && *p <= 'F')
+                  || *p == ':'))
             {
                 return NGX_DECLINED;
             }
 
-            (*host_end)++;
+            p++;
         }
 
-        if (*host_end >= end_of_authority || *host_end == start + 1) {
+        if (p >= end_of_authority || p == start + 1) {
             return NGX_DECLINED;
         }
 
-        (*host_end)++;
+        p++;
 
     } else {
-        *host_end = start;
+        p = start;
 
-        while (*host_end < end_of_authority && **host_end != ':') {
-            if (!((**host_end >= 'a' && **host_end <= 'z')
-                  || (**host_end >= 'A' && **host_end <= 'Z')
-                  || (**host_end >= '0' && **host_end <= '9')
-                  || **host_end == '-' || **host_end == '.'))
+        while (p < end_of_authority && *p != ':') {
+            if (!((*p >= 'a' && *p <= 'z')
+                  || (*p >= 'A' && *p <= 'Z')
+                  || (*p >= '0' && *p <= '9')
+                  || *p == '-' || *p == '.'))
             {
                 return NGX_DECLINED;
             }
 
-            (*host_end)++;
+            p++;
         }
     }
 
-    if (*host_end < end_of_authority) {
-        if (**host_end != ':' || *host_end + 1 == end_of_authority) {
+    host_stop = p;
+
+    if (host_stop < end_of_authority) {
+        if (*host_stop != ':' || host_stop + 1 == end_of_authority) {
             return NGX_DECLINED;
         }
 
-        for (p = *host_end + 1; p < end_of_authority; p++) {
+        for (p = host_stop + 1; p < end_of_authority; p++) {
             if (*p < '0' || *p > '9') {
                 return NGX_DECLINED;
             }
         }
     }
 
-    if (*host_end == *host_start) {
+    if (host_stop == host_begin) {
         return NGX_DECLINED;
     }
 
+    *host_start = host_begin;
+    *host_end = host_stop;
     *authority_end = end_of_authority;
 
     return NGX_OK;
