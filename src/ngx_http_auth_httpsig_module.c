@@ -1229,7 +1229,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
     cache = mcf->shm_zone->data;
 
     if (ngx_auth_httpsig_cache_lookup(cache, r->pool, &host, ngx_time(),
-                                      &jwks, &status)
+                                      &jwks, &status, NULL)
         != NGX_OK)
     {
         ctx->keys_unavailable = 1;
@@ -1263,6 +1263,12 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
 
     case NGX_AUTH_HTTPSIG_CACHE_NEGATIVE:
+        ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE;
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+
+    case NGX_AUTH_HTTPSIG_CACHE_UNAVAILABLE:
         ctx->keys_unavailable = 1;
         ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE;
         ctx->directory_done = 1;
@@ -1528,7 +1534,7 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
                                                      cache_max_ttl);
 
                 ngx_auth_httpsig_cache_store(cache, &ctx->directory_host,
-                                             &ctx->jwks, now + ttl);
+                                             &ctx->jwks, now + ttl, NULL);
 
             } else {
                 accepted = 0;

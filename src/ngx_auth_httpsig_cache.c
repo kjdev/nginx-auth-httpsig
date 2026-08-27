@@ -22,7 +22,8 @@ static ngx_auth_httpsig_cache_node_t *ngx_auth_httpsig_cache_find(
 static ngx_auth_httpsig_cache_node_t *ngx_auth_httpsig_cache_find_victim(
     ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel, time_t now);
 static ngx_auth_httpsig_cache_node_t *ngx_auth_httpsig_cache_alloc_node(
-    ngx_auth_httpsig_cache_ctx_t *ctx, const ngx_str_t *host, time_t now);
+    ngx_auth_httpsig_cache_ctx_t *ctx, const ngx_str_t *host, uint32_t hash,
+    time_t now);
 
 
 ngx_int_t
@@ -59,6 +60,8 @@ ngx_auth_httpsig_cache_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_auth_httpsig_cache_rbtree_insert_value);
+
+    ctx->sh->generation = 0;
 
     len = sizeof(" in auth_httpsig key cache zone \"\"")
           + shm_zone->shm.name.len;
@@ -189,7 +192,7 @@ ngx_auth_httpsig_cache_find_victim(ngx_rbtree_node_t *node,
  */
 static ngx_auth_httpsig_cache_node_t *
 ngx_auth_httpsig_cache_alloc_node(ngx_auth_httpsig_cache_ctx_t *ctx,
-    const ngx_str_t *host, time_t now)
+    const ngx_str_t *host, uint32_t hash, time_t now)
 {
     ngx_auth_httpsig_cache_node_t *cn, *victim;
     size_t size;
@@ -226,7 +229,7 @@ ngx_auth_httpsig_cache_alloc_node(ngx_auth_httpsig_cache_ctx_t *ctx,
     cn->host.data = (u_char *) cn + sizeof(ngx_auth_httpsig_cache_node_t);
     ngx_memcpy(cn->host.data, host->data, host->len);
 
-    cn->node.key = ngx_crc32_short(host->data, host->len);
+    cn->node.key = hash;
 
     ngx_rbtree_insert(&ctx->sh->rbtree, &cn->node);
 
@@ -237,7 +240,7 @@ ngx_auth_httpsig_cache_alloc_node(ngx_auth_httpsig_cache_ctx_t *ctx,
 ngx_int_t
 ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
     ngx_pool_t *pool, const ngx_str_t *host, time_t now, ngx_str_t *jwks,
-    ngx_auth_httpsig_cache_status_t *status)
+    ngx_auth_httpsig_cache_status_t *status, ngx_uint_t *generation)
 {
     uint32_t hash;
     ngx_auth_httpsig_cache_node_t *cn;
@@ -246,6 +249,10 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
         || status == NULL)
     {
         return NGX_ERROR;
+    }
+
+    if (generation != NULL) {
+        *generation = 0;
     }
 
     hash = ngx_crc32_short(host->data, host->len);
@@ -264,6 +271,10 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
 
             ngx_memcpy(jwks->data, cn->jwks.data, cn->jwks.len);
             jwks->len = cn->jwks.len;
+
+            if (generation != NULL) {
+                *generation = cn->generation;
+            }
 
             *status = NGX_AUTH_HTTPSIG_CACHE_HIT;
 
@@ -284,16 +295,16 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
     }
 
     if (cn == NULL) {
-        cn = ngx_auth_httpsig_cache_alloc_node(ctx, host, now);
+        cn = ngx_auth_httpsig_cache_alloc_node(ctx, host, hash, now);
 
         if (cn == NULL) {
             ngx_shmtx_unlock(&ctx->shpool->mutex);
 
             ngx_log_error(NGX_LOG_WARN, pool->log, 0,
                           "auth_httpsig: key cache zone has no room for "
-                          "\"%V\", proceeding without caching", host);
+                          "\"%V\", failing open without fetching", host);
 
-            *status = NGX_AUTH_HTTPSIG_CACHE_CLAIMED;
+            *status = NGX_AUTH_HTTPSIG_CACHE_UNAVAILABLE;
             return NGX_OK;
         }
     }
@@ -310,7 +321,8 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
 
 ngx_int_t
 ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
-    const ngx_str_t *host, const ngx_str_t *jwks, time_t expires_at)
+    const ngx_str_t *host, const ngx_str_t *jwks, time_t expires_at,
+    ngx_uint_t *generation)
 {
     uint32_t hash;
     ngx_auth_httpsig_cache_node_t *cn;
@@ -320,6 +332,10 @@ ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
         return NGX_ERROR;
     }
 
+    if (generation != NULL) {
+        *generation = 0;
+    }
+
     hash = ngx_crc32_short(host->data, host->len);
 
     ngx_shmtx_lock(&ctx->shpool->mutex);
@@ -327,7 +343,7 @@ ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
     cn = ngx_auth_httpsig_cache_find(ctx, hash, host);
 
     if (cn == NULL) {
-        cn = ngx_auth_httpsig_cache_alloc_node(ctx, host, ngx_time());
+        cn = ngx_auth_httpsig_cache_alloc_node(ctx, host, hash, ngx_time());
 
         if (cn == NULL) {
             ngx_shmtx_unlock(&ctx->shpool->mutex);
@@ -364,6 +380,11 @@ ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
     cn->jwks.len = jwks->len;
     cn->expires_at = expires_at;
     cn->fetching = 0;
+    cn->generation = ++ctx->sh->generation;
+
+    if (generation != NULL) {
+        *generation = cn->generation;
+    }
 
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 
