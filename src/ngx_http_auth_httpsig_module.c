@@ -1011,8 +1011,18 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
     u_char *qmark;
     ngx_list_part_t *part;
     ngx_table_elt_t *header;
-    ngx_uint_t i, n;
+    ngx_uint_t i, n, p;
     ngx_auth_httpsig_header_t *h;
+
+    static const struct {
+        const char *scheme;
+        size_t      scheme_len;
+        const char *suffix;
+        size_t      suffix_len;
+    } default_ports[] = {
+        { "http",  sizeof("http") - 1, ":80",  sizeof(":80") - 1 },
+        { "https", sizeof("https") - 1, ":443", sizeof(":443") - 1 },
+    };
 
     ngx_memzero(req, sizeof(ngx_auth_httpsig_request_t));
 
@@ -1039,25 +1049,20 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
     ngx_strlow(req->authority.data, host.data, host.len);
     req->authority.len = host.len;
 
-    if (req->scheme.len == sizeof("http") - 1
-        && ngx_strncasecmp(req->scheme.data, (u_char *) "http",
-                           sizeof("http") - 1) == 0
-        && req->authority.len > sizeof(":80") - 1
-        && ngx_memcmp(req->authority.data
-                      + req->authority.len - (sizeof(":80") - 1),
-                      ":80", sizeof(":80") - 1) == 0)
-    {
-        req->authority.len -= sizeof(":80") - 1;
-
-    } else if (req->scheme.len == sizeof("https") - 1
-               && ngx_strncasecmp(req->scheme.data, (u_char *) "https",
-                                  sizeof("https") - 1) == 0
-               && req->authority.len > sizeof(":443") - 1
-               && ngx_memcmp(req->authority.data
-                             + req->authority.len - (sizeof(":443") - 1),
-                             ":443", sizeof(":443") - 1) == 0)
-    {
-        req->authority.len -= sizeof(":443") - 1;
+    for (p = 0; p < sizeof(default_ports) / sizeof(default_ports[0]); p++) {
+        if (req->scheme.len == default_ports[p].scheme_len
+            && ngx_strncasecmp(req->scheme.data,
+                               (u_char *) default_ports[p].scheme,
+                               default_ports[p].scheme_len) == 0
+            && req->authority.len > default_ports[p].suffix_len
+            && ngx_memcmp(req->authority.data
+                          + req->authority.len - default_ports[p].suffix_len,
+                          default_ports[p].suffix,
+                          default_ports[p].suffix_len) == 0)
+        {
+            req->authority.len -= default_ports[p].suffix_len;
+            break;
+        }
     }
 
     req->request_target = r->unparsed_uri;
