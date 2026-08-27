@@ -149,7 +149,6 @@ ngx_auth_httpsig_profile_verify(ngx_pool_t *pool,
     ngx_auth_httpsig_sfv_dictionary_t *input_dict, *sig_dict;
     ngx_auth_httpsig_sfv_dict_entry_t *entry;
     const ngx_auth_httpsig_sfv_value_t *sig_value;
-    ngx_auth_httpsig_sfv_error_t err;
     ngx_auth_httpsig_base_reason_t base_reason;
     ngx_str_t input_raw, sig_raw, base, agent_raw;
     ngx_int_t rc;
@@ -189,7 +188,7 @@ ngx_auth_httpsig_profile_verify(ngx_pool_t *pool,
 
     /* Step 3: both parse as Dictionaries. */
     rc = ngx_auth_httpsig_sfv_parse_dictionary(pool, &input_raw, &input_dict,
-                                               &err);
+                                               NULL);
     if (rc == NGX_DECLINED) {
         *result = NGX_AUTH_HTTPSIG_RESULT_PARSE_ERROR;
         return NGX_DECLINED;
@@ -199,7 +198,7 @@ ngx_auth_httpsig_profile_verify(ngx_pool_t *pool,
     }
 
     rc = ngx_auth_httpsig_sfv_parse_dictionary(pool, &sig_raw, &sig_dict,
-                                               &err);
+                                               NULL);
     if (rc == NGX_DECLINED) {
         *result = NGX_AUTH_HTTPSIG_RESULT_PARSE_ERROR;
         return NGX_DECLINED;
