@@ -332,6 +332,53 @@ TEST(profile_agent_host_rejects_invalid_bytes)
 }
 
 
+TEST(profile_agent_host_rejects_oversized_raw_fallback)
+{
+    profile_fixture_t               fx;
+    ngx_auth_httpsig_profile_ctx_t  pctx;
+    ngx_auth_httpsig_signature_t    sig;
+    ngx_auth_httpsig_result_t       result;
+    ngx_str_t                       input_text, agent, filler;
+
+    ASSERT_EQ_INT(NGX_OK, build_fixture(pool, &fx));
+
+    /*
+     * Oversized and unquoted, so it fails to parse as an sf-string and
+     * falls back to the raw header bytes. That fallback must still be
+     * bounded by NGX_AUTH_HTTPSIG_MAX_SFV_LENGTH rather than relying on
+     * nginx's own header size limits.
+     */
+    filler.len = NGX_AUTH_HTTPSIG_MAX_SFV_LENGTH + 1;
+    filler.data = ngx_pnalloc(pool, filler.len);
+    ngx_memset(filler.data, 'a', filler.len);
+
+    agent = fmt(pool, "https://%.*s.test/",
+                (int) filler.len, (char *) filler.data);
+    push_header(pool, fx.req->headers,
+                &(ngx_str_t) ngx_string("signature-agent"), &agent);
+
+    input_text = fmt(pool,
+        "sig1=(\"@target-uri\" \"@authority\" \"signature-agent\");"
+        "created=%d;expires=%d;keyid=\"%.*s\";tag=\"web-bot-auth\"",
+        TEST_NOW - 5, TEST_NOW + 55,
+        (int) fx.thumbprint.len, (char *) fx.thumbprint.data);
+
+    attach_signature(pool, &fx, &input_text, "sig1");
+
+    pctx = build_ctx(&fx);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_profile_verify(pool, &pctx, fx.req, &sig, &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_OK, result);
+    ASSERT_EQ_INT(0, sig.agent_host.len);
+
+    ngx_auth_httpsig_keys_free(fx.keys);
+    EVP_PKEY_free(fx.pkey);
+
+    return 0;
+}
+
+
 TEST(profile_agent_host_extracts_bracketed_ipv6)
 {
     profile_fixture_t               fx;
@@ -764,6 +811,7 @@ TEST_SUITE(profile)
     RUN(profile_verify_success);
     RUN(profile_agent_host_extracts_valid_host);
     RUN(profile_agent_host_rejects_invalid_bytes);
+    RUN(profile_agent_host_rejects_oversized_raw_fallback);
     RUN(profile_agent_host_extracts_bracketed_ipv6);
     RUN(profile_agent_host_rejects_invalid_bracketed_bytes);
     RUN(profile_agent_authority_keeps_port);
