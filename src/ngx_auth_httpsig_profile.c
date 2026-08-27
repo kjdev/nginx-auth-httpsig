@@ -15,6 +15,9 @@
 #include "ngx_auth_httpsig_str.h"
 
 
+#define NGX_AUTH_HTTPSIG_NELTS(a)  (sizeof(a) / sizeof((a)[0]))
+
+
 static const ngx_auth_httpsig_profile_t ngx_auth_httpsig_profiles[] = {
 
     {
@@ -77,11 +80,7 @@ ngx_auth_httpsig_profile_get(const ngx_str_t *name)
         return NULL;
     }
 
-    for (i = 0;
-         i < sizeof(ngx_auth_httpsig_profiles)
-         / sizeof(ngx_auth_httpsig_profiles[0]);
-         i++)
-    {
+    for (i = 0; i < NGX_AUTH_HTTPSIG_NELTS(ngx_auth_httpsig_profiles); i++) {
         if (ngx_auth_httpsig_str_eq(&ngx_auth_httpsig_profiles[i].name, name)) {
             return &ngx_auth_httpsig_profiles[i];
         }
@@ -448,8 +447,7 @@ ngx_auth_httpsig_profile_covered_components(const ngx_array_t *items)
         }
 
         for (j = 0;
-             j < sizeof(ngx_auth_httpsig_profile_components)
-             / sizeof(ngx_auth_httpsig_profile_components[0]);
+             j < NGX_AUTH_HTTPSIG_NELTS(ngx_auth_httpsig_profile_components);
              j++)
         {
             if (ngx_auth_httpsig_str_eq(&item[i].bare.value,
