@@ -1203,6 +1203,15 @@ ngx_http_auth_httpsig_directory_fail_open_release(
  * other work, so re-entrancy (this being called again while it is
  * already running) is structurally impossible.
  *
+ * Always evaluates against r->main, even when called with a subrequest's
+ * r (e.g. an SSI include or an auth_request-style check reading
+ * $httpsig_* before the main request has run this phase). A subrequest
+ * carries the client's original headers_in but not its original
+ * @method/@request-target -- nginx gives every subrequest its own
+ * method and URI, which need not match what the client actually signed
+ * -- so evaluating against a subrequest's r risks a spurious signature
+ * mismatch and a wasted second verification of the same signature.
+ *
  * Steps up to selecting a tag-matching Signature-Input label are
  * fail-open ("not signed", ctx->result stays NOT_SIGNED); every step
  * after that is fail-closed (an ordinary declined result). Internal
@@ -1716,6 +1725,8 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_auth_httpsig_result_t result;
     ngx_auth_httpsig_keys_t *dynamic_keys;
     ngx_int_t rc;
+
+    r = r->main;
 
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_httpsig_module);
 
