@@ -30,8 +30,6 @@ static ngx_int_t ngx_auth_httpsig_base_buf_puts(
 static ngx_int_t ngx_auth_httpsig_base_buf_put_str(
     ngx_auth_httpsig_base_buf_t *buf, const ngx_str_t *s);
 
-static ngx_flag_t ngx_auth_httpsig_base_name_is(const ngx_str_t *name,
-    const char *lit);
 static ngx_int_t ngx_auth_httpsig_base_reject_params(
     const ngx_array_t *params, ngx_auth_httpsig_base_reason_t *reason);
 static ngx_str_t ngx_auth_httpsig_base_effective_path(
@@ -92,17 +90,6 @@ ngx_auth_httpsig_base_buf_put_str(ngx_auth_httpsig_base_buf_t *buf,
     const ngx_str_t *s)
 {
     return ngx_auth_httpsig_base_buf_put(buf, s->data, s->len);
-}
-
-
-static ngx_flag_t
-ngx_auth_httpsig_base_name_is(const ngx_str_t *name, const char *lit)
-{
-    size_t len;
-
-    len = ngx_strlen(lit);
-
-    return name->len == len && ngx_memcmp(name->data, lit, len) == 0;
 }
 
 
@@ -544,6 +531,47 @@ ngx_auth_httpsig_base_field(ngx_pool_t *pool,
 }
 
 
+typedef enum {
+    NGX_AUTH_HTTPSIG_BASE_DERIVE_METHOD,
+    NGX_AUTH_HTTPSIG_BASE_DERIVE_SCHEME,
+    NGX_AUTH_HTTPSIG_BASE_DERIVE_AUTHORITY,
+    NGX_AUTH_HTTPSIG_BASE_DERIVE_PATH,
+    NGX_AUTH_HTTPSIG_BASE_DERIVE_QUERY,
+    NGX_AUTH_HTTPSIG_BASE_DERIVE_QUERY_PARAM,
+    NGX_AUTH_HTTPSIG_BASE_DERIVE_REQUEST_TARGET,
+    NGX_AUTH_HTTPSIG_BASE_DERIVE_TARGET_URI
+} ngx_auth_httpsig_base_derive_id_t;
+
+
+typedef struct {
+    ngx_str_t                          name;
+    ngx_auth_httpsig_base_derive_id_t  id;
+    ngx_flag_t                         needs_target;
+} ngx_auth_httpsig_base_derive_t;
+
+
+static const ngx_auth_httpsig_base_derive_t
+    ngx_auth_httpsig_base_derive_table[] =
+{
+    { ngx_string("@method"),
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_METHOD,         0 },
+    { ngx_string("@scheme"),
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_SCHEME,         0 },
+    { ngx_string("@authority"),
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_AUTHORITY,      0 },
+    { ngx_string("@path"),
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_PATH,           1 },
+    { ngx_string("@query"),
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_QUERY,          1 },
+    { ngx_string("@query-param"),
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_QUERY_PARAM,    0 },
+    { ngx_string("@request-target"),
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_REQUEST_TARGET, 1 },
+    { ngx_string("@target-uri"),
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_TARGET_URI,     1 },
+};
+
+
 ngx_int_t
 ngx_auth_httpsig_base_derive_component(ngx_pool_t *pool,
     const ngx_auth_httpsig_request_t *req,
@@ -551,6 +579,8 @@ ngx_auth_httpsig_base_derive_component(ngx_pool_t *pool,
     ngx_auth_httpsig_base_reason_t *reason)
 {
     const ngx_str_t *name;
+    const ngx_auth_httpsig_base_derive_t *d;
+    ngx_uint_t i;
     ngx_int_t rc;
 
     name = &component->bare.value;
@@ -560,110 +590,79 @@ ngx_auth_httpsig_base_derive_component(ngx_pool_t *pool,
         return NGX_DECLINED;
     }
 
-    if (ngx_auth_httpsig_base_name_is(name, "@method")) {
-        rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
-        if (rc != NGX_OK) {
-            return rc;
-        }
+    d = NULL;
 
-        *out = req->method;
-        return NGX_OK;
+    for (i = 0;
+         i < sizeof(ngx_auth_httpsig_base_derive_table)
+         / sizeof(ngx_auth_httpsig_base_derive_table[0]);
+         i++)
+    {
+        if (ngx_auth_httpsig_str_eq(&ngx_auth_httpsig_base_derive_table[i].name,
+                                    name))
+        {
+            d = &ngx_auth_httpsig_base_derive_table[i];
+            break;
+        }
     }
 
-    if (ngx_auth_httpsig_base_name_is(name, "@scheme")) {
-        rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
-        if (rc != NGX_OK) {
-            return rc;
-        }
-
-        *out = req->scheme;
-        return NGX_OK;
+    if (d == NULL) {
+        *reason = NGX_AUTH_HTTPSIG_BASE_UNKNOWN_COMPONENT;
+        return NGX_DECLINED;
     }
 
-    if (ngx_auth_httpsig_base_name_is(name, "@authority")) {
-        rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
-        if (rc != NGX_OK) {
-            return rc;
-        }
-
-        *out = req->authority;
-        return NGX_OK;
-    }
-
-    if (ngx_auth_httpsig_base_name_is(name, "@path")) {
-        rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
-        if (rc != NGX_OK) {
-            return rc;
-        }
-
-        /* Without a real request-line path (CONNECT authority-form,
-         * OPTIONS * asterisk-form), req->path is zeroed and would
-         * otherwise fall back to "/" here, making the base string
-         * identical to a real request for the root path. */
-        if (!req->target_defined) {
-            *reason = NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET;
-            return NGX_DECLINED;
-        }
-
-        *out = ngx_auth_httpsig_base_effective_path(req);
-        return NGX_OK;
-    }
-
-    if (ngx_auth_httpsig_base_name_is(name, "@query")) {
-        rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
-        if (rc != NGX_OK) {
-            return rc;
-        }
-
-        if (!req->target_defined) {
-            *reason = NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET;
-            return NGX_DECLINED;
-        }
-
-        rc = ngx_auth_httpsig_base_query(pool, req, out);
-        if (rc != NGX_OK) {
-            return rc;
-        }
-
-        return NGX_OK;
-    }
-
-    if (ngx_auth_httpsig_base_name_is(name, "@query-param")) {
+    /* @query-param carries its own "name" parameter rather than
+     * rejecting all params, so it must bypass the shared reject_params()
+     * check below. */
+    if (d->id == NGX_AUTH_HTTPSIG_BASE_DERIVE_QUERY_PARAM) {
         return ngx_auth_httpsig_base_query_param(pool, req, component, out,
                                                  reason);
     }
 
-    if (ngx_auth_httpsig_base_name_is(name, "@request-target")) {
-        rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
-        if (rc != NGX_OK) {
-            return rc;
-        }
+    rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
+    if (rc != NGX_OK) {
+        return rc;
+    }
 
-        if (!req->target_defined) {
-            *reason = NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET;
-            return NGX_DECLINED;
-        }
+    /* @path, @query, @request-target, and @target-uri all describe a
+     * concrete request target; without one (CONNECT authority-form,
+     * OPTIONS * asterisk-form) there is nothing meaningful to derive. */
+    if (d->needs_target && !req->target_defined) {
+        *reason = NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET;
+        return NGX_DECLINED;
+    }
 
+    switch (d->id) {
+
+    case NGX_AUTH_HTTPSIG_BASE_DERIVE_METHOD:
+        *out = req->method;
+        return NGX_OK;
+
+    case NGX_AUTH_HTTPSIG_BASE_DERIVE_SCHEME:
+        *out = req->scheme;
+        return NGX_OK;
+
+    case NGX_AUTH_HTTPSIG_BASE_DERIVE_AUTHORITY:
+        *out = req->authority;
+        return NGX_OK;
+
+    case NGX_AUTH_HTTPSIG_BASE_DERIVE_PATH:
+        *out = ngx_auth_httpsig_base_effective_path(req);
+        return NGX_OK;
+
+    case NGX_AUTH_HTTPSIG_BASE_DERIVE_QUERY:
+        return ngx_auth_httpsig_base_query(pool, req, out);
+
+    case NGX_AUTH_HTTPSIG_BASE_DERIVE_REQUEST_TARGET:
         *out = req->request_target;
         return NGX_OK;
-    }
 
-    if (ngx_auth_httpsig_base_name_is(name, "@target-uri")) {
-        rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
-        if (rc != NGX_OK) {
-            return rc;
-        }
-
-        if (!req->target_defined) {
-            *reason = NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET;
-            return NGX_DECLINED;
-        }
-
+    case NGX_AUTH_HTTPSIG_BASE_DERIVE_TARGET_URI:
         return ngx_auth_httpsig_base_target_uri(pool, req, out);
-    }
 
-    *reason = NGX_AUTH_HTTPSIG_BASE_UNKNOWN_COMPONENT;
-    return NGX_DECLINED;
+    default:
+        *reason = NGX_AUTH_HTTPSIG_BASE_UNKNOWN_COMPONENT;
+        return NGX_DECLINED;
+    }
 }
 
 
