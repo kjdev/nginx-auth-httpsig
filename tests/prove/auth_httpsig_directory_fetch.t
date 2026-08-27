@@ -260,7 +260,7 @@ _EOC_
 sub sign_headers {
     my ($agent_host, $target, $keyfile, $keyid) = @_;
     $target //= '/t';
-    $keyfile //= 't/data/ed25519-key.pem';
+    $keyfile //= 'tests/prove/data/ed25519-key.pem';
     $keyid //= 'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA';
 
     my $req = HttpSig::default_request(
@@ -531,7 +531,7 @@ verified:0 error:unknown_keyid
 --- more_headers eval
 use HttpSig;
 main::sign_headers('127.0.0.1:18451', '/t',
-    't/data/ed25519-key2.pem', 'ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc')
+    'tests/prove/data/ed25519-key2.pem', 'ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc')
 --- request
 GET /t
 --- error_code: 200

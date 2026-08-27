@@ -34,7 +34,7 @@ my $req = default_request(
 );
 
 my ($input, $sig) = sign(
-    keyfile    => 't/data/ed25519-key.pem',
+    keyfile    => 'tests/prove/data/ed25519-key.pem',
     components => ['@target-uri', '@authority', 'signature-agent'],
     params     => [
         ['created', time(),       'integer'],
@@ -79,7 +79,7 @@ for my $host (qw(bot-a.example.test bot-b.example.test)) {
     );
 
     my ($input, $sig) = sign(
-        keyfile    => 't/data/ed25519-key.pem',
+        keyfile    => 'tests/prove/data/ed25519-key.pem',
         components => ['@target-uri', '@authority', 'signature-agent'],
         params     => [
             ['created', time(),       'integer'],
