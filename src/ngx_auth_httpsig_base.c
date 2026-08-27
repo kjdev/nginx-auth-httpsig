@@ -418,10 +418,8 @@ ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
     ngx_auth_httpsig_base_reason_t *reason)
 {
     const ngx_auth_httpsig_sfv_bare_t *name_param;
-    ngx_auth_httpsig_sfv_param_t *params;
     ngx_str_t decoded_name, decoded, value_raw;
     u_char *p, *end, *seg_end, *eq_pos;
-    ngx_uint_t i, nparams;
     ngx_flag_t found;
 
     name_param = ngx_auth_httpsig_sfv_param_get(component->params, "name");
@@ -433,17 +431,12 @@ ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
         return NGX_DECLINED;
     }
 
-    params = component->params->elts;
-    nparams = component->params->nelts;
-
-    for (i = 0; i < nparams; i++) {
-        if (!(params[i].key.len == sizeof("name") - 1
-              && ngx_memcmp(params[i].key.data, "name", sizeof("name") - 1)
-              == 0))
-        {
-            *reason = NGX_AUTH_HTTPSIG_BASE_UNSUPPORTED_PARAM;
-            return NGX_DECLINED;
-        }
+    /* The SFV parser rejects duplicate parameter keys (sfv.c), so
+     * finding "name" above and nelts != 1 together mean some other,
+     * unsupported parameter is also present. */
+    if (component->params->nelts != 1) {
+        *reason = NGX_AUTH_HTTPSIG_BASE_UNSUPPORTED_PARAM;
+        return NGX_DECLINED;
     }
 
     if (ngx_auth_httpsig_base_qs_decode(pool, &name_param->value,
