@@ -361,6 +361,47 @@ ngx_auth_httpsig_profile_select(const ngx_auth_httpsig_sfv_dictionary_t *dict,
 }
 
 
+typedef enum {
+    NGX_AUTH_HTTPSIG_PROFILE_PARAM_INTEGER,
+    NGX_AUTH_HTTPSIG_PROFILE_PARAM_STRING
+} ngx_auth_httpsig_profile_param_kind_t;
+
+typedef struct {
+    const char                            *name;
+    ngx_auth_httpsig_profile_param_kind_t  kind;
+    size_t                                 offset;
+    ngx_uint_t                             bit;
+} ngx_auth_httpsig_profile_param_t;
+
+static const ngx_auth_httpsig_profile_param_t
+    ngx_auth_httpsig_profile_params[] =
+{
+    { "created", NGX_AUTH_HTTPSIG_PROFILE_PARAM_INTEGER,
+      offsetof(ngx_auth_httpsig_signature_t, created),
+      NGX_AUTH_HTTPSIG_PARAM_CREATED },
+
+    { "expires", NGX_AUTH_HTTPSIG_PROFILE_PARAM_INTEGER,
+      offsetof(ngx_auth_httpsig_signature_t, expires),
+      NGX_AUTH_HTTPSIG_PARAM_EXPIRES },
+
+    { "keyid", NGX_AUTH_HTTPSIG_PROFILE_PARAM_STRING,
+      offsetof(ngx_auth_httpsig_signature_t, keyid),
+      NGX_AUTH_HTTPSIG_PARAM_KEYID },
+
+    { "alg", NGX_AUTH_HTTPSIG_PROFILE_PARAM_STRING,
+      offsetof(ngx_auth_httpsig_signature_t, alg),
+      NGX_AUTH_HTTPSIG_PARAM_ALG },
+
+    { "nonce", NGX_AUTH_HTTPSIG_PROFILE_PARAM_STRING,
+      offsetof(ngx_auth_httpsig_signature_t, nonce),
+      NGX_AUTH_HTTPSIG_PARAM_NONCE },
+
+    { "tag", NGX_AUTH_HTTPSIG_PROFILE_PARAM_STRING,
+      offsetof(ngx_auth_httpsig_signature_t, tag),
+      NGX_AUTH_HTTPSIG_PARAM_TAG }
+};
+
+
 /* Reads the parameters a profile might require out of a selected
  * Signature-Input Inner List's Parameters, setting the matching
  * `present` bit for each one found. NGX_DECLINED if a parameter is
@@ -369,60 +410,37 @@ static ngx_int_t
 ngx_auth_httpsig_profile_extract_params(const ngx_array_t *params,
     ngx_auth_httpsig_signature_t *sig)
 {
+    u_char *field;
+    ngx_uint_t i;
     const ngx_auth_httpsig_sfv_bare_t *v;
+    const ngx_auth_httpsig_profile_param_t *p;
 
-    v = ngx_auth_httpsig_sfv_param_get(params, "created");
-    if (v != NULL) {
-        if (v->type != NGX_AUTH_HTTPSIG_SFV_INTEGER) {
-            return NGX_DECLINED;
-        }
-        sig->created = v->integer;
-        sig->present |= NGX_AUTH_HTTPSIG_PARAM_CREATED;
-    }
+    for (i = 0; i < NGX_AUTH_HTTPSIG_NELTS(ngx_auth_httpsig_profile_params);
+         i++)
+    {
+        p = &ngx_auth_httpsig_profile_params[i];
 
-    v = ngx_auth_httpsig_sfv_param_get(params, "expires");
-    if (v != NULL) {
-        if (v->type != NGX_AUTH_HTTPSIG_SFV_INTEGER) {
-            return NGX_DECLINED;
+        v = ngx_auth_httpsig_sfv_param_get(params, p->name);
+        if (v == NULL) {
+            continue;
         }
-        sig->expires = v->integer;
-        sig->present |= NGX_AUTH_HTTPSIG_PARAM_EXPIRES;
-    }
 
-    v = ngx_auth_httpsig_sfv_param_get(params, "keyid");
-    if (v != NULL) {
-        if (v->type != NGX_AUTH_HTTPSIG_SFV_STRING) {
-            return NGX_DECLINED;
-        }
-        sig->keyid = v->value;
-        sig->present |= NGX_AUTH_HTTPSIG_PARAM_KEYID;
-    }
+        field = (u_char *) sig + p->offset;
 
-    v = ngx_auth_httpsig_sfv_param_get(params, "alg");
-    if (v != NULL) {
-        if (v->type != NGX_AUTH_HTTPSIG_SFV_STRING) {
-            return NGX_DECLINED;
-        }
-        sig->alg = v->value;
-        sig->present |= NGX_AUTH_HTTPSIG_PARAM_ALG;
-    }
+        if (p->kind == NGX_AUTH_HTTPSIG_PROFILE_PARAM_INTEGER) {
+            if (v->type != NGX_AUTH_HTTPSIG_SFV_INTEGER) {
+                return NGX_DECLINED;
+            }
+            *(int64_t *) field = v->integer;
 
-    v = ngx_auth_httpsig_sfv_param_get(params, "nonce");
-    if (v != NULL) {
-        if (v->type != NGX_AUTH_HTTPSIG_SFV_STRING) {
-            return NGX_DECLINED;
+        } else {
+            if (v->type != NGX_AUTH_HTTPSIG_SFV_STRING) {
+                return NGX_DECLINED;
+            }
+            *(ngx_str_t *) field = v->value;
         }
-        sig->nonce = v->value;
-        sig->present |= NGX_AUTH_HTTPSIG_PARAM_NONCE;
-    }
 
-    v = ngx_auth_httpsig_sfv_param_get(params, "tag");
-    if (v != NULL) {
-        if (v->type != NGX_AUTH_HTTPSIG_SFV_STRING) {
-            return NGX_DECLINED;
-        }
-        sig->tag = v->value;
-        sig->present |= NGX_AUTH_HTTPSIG_PARAM_TAG;
+        sig->present |= p->bit;
     }
 
     return NGX_OK;
