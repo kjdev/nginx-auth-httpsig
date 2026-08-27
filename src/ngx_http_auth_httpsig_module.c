@@ -162,7 +162,7 @@ static ngx_int_t ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
 static ngx_auth_httpsig_keys_t *ngx_http_auth_httpsig_resolve_keys(
     ngx_http_request_t *r, ngx_http_auth_httpsig_ctx_t *ctx);
 static ngx_table_elt_t *ngx_http_auth_httpsig_find_header(
-    ngx_http_request_t *r, const char *name, size_t len);
+    ngx_list_t *list, const char *name, size_t len);
 static ngx_int_t ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
     ngx_auth_httpsig_request_t *req);
 
@@ -964,14 +964,14 @@ ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf, ngx_command_t *cmd,
 
 
 static ngx_table_elt_t *
-ngx_http_auth_httpsig_find_header(ngx_http_request_t *r, const char *name,
+ngx_http_auth_httpsig_find_header(ngx_list_t *list, const char *name,
     size_t len)
 {
     ngx_list_part_t *part;
     ngx_table_elt_t *header;
     ngx_uint_t i;
 
-    part = &r->headers_in.headers.part;
+    part = &list->part;
     header = part->elts;
 
     for (i = 0; /* void */; i++) {
@@ -1273,10 +1273,12 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         ngx_http_set_ctx(r, ctx, ngx_http_auth_httpsig_module);
     }
 
-    sig_input = ngx_http_auth_httpsig_find_header(r, "signature-input",
+    sig_input = ngx_http_auth_httpsig_find_header(&r->headers_in.headers,
+                                                  "signature-input",
                                                   sizeof("signature-input") -
                                                   1);
-    sig_agent = ngx_http_auth_httpsig_find_header(r, "signature-agent",
+    sig_agent = ngx_http_auth_httpsig_find_header(&r->headers_in.headers,
+                                                  "signature-agent",
                                                   sizeof("signature-agent") -
                                                   1);
 
@@ -1425,9 +1427,8 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     ngx_http_core_loc_conf_t *clcf;
     ngx_auth_httpsig_cache_ctx_t *cache;
     ngx_str_t schema, content_type, body, cache_control;
-    ngx_table_elt_t *h;
-    ngx_list_part_t *part;
-    ngx_uint_t i, status;
+    ngx_table_elt_t *h, *age_header;
+    ngx_uint_t status;
     time_t now, age, ttl;
     size_t len;
     u_char *p;
@@ -1513,31 +1514,14 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
             }
         }
 
-        part = &sr->upstream->headers_in.headers.part;
-        h = part->elts;
+        age_header = ngx_http_auth_httpsig_find_header(
+            &sr->upstream->headers_in.headers, "age", sizeof("age") - 1);
 
-        for (i = 0; /* void */; i++) {
-            if (i >= part->nelts) {
-                if (part->next == NULL) {
-                    break;
-                }
+        if (age_header != NULL) {
+            age = ngx_atotm(age_header->value.data, age_header->value.len);
 
-                part = part->next;
-                h = part->elts;
-                i = 0;
-            }
-
-            if (h[i].key.len == sizeof("age") - 1
-                && ngx_strncasecmp(h[i].key.data, (u_char *) "age",
-                                   sizeof("age") - 1) == 0)
-            {
-                age = ngx_atotm(h[i].value.data, h[i].value.len);
-
-                if (age == (time_t) NGX_ERROR) {
-                    age = 0;
-                }
-
-                break;
+            if (age == (time_t) NGX_ERROR) {
+                age = 0;
             }
         }
 
@@ -1748,7 +1732,8 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ctx->result = NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED;
     *out = ctx;
 
-    if (ngx_http_auth_httpsig_find_header(r, "signature-input",
+    if (ngx_http_auth_httpsig_find_header(&r->headers_in.headers,
+                                          "signature-input",
                                           sizeof("signature-input") - 1)
         == NULL)
     {
