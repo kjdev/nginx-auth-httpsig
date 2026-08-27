@@ -300,6 +300,18 @@ ngx_strncasecmp(u_char *s1, u_char *s2, size_t n)
 }
 
 
+void
+ngx_strlow(u_char *dst, u_char *src, size_t n)
+{
+    while (n) {
+        *dst = ngx_tolower(*src);
+        dst++;
+        src++;
+        n--;
+    }
+}
+
+
 time_t
 ngx_time(void)
 {

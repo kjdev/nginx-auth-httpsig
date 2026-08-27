@@ -177,6 +177,7 @@ ngx_int_t ngx_array_init(ngx_array_t *array, ngx_pool_t *pool, ngx_uint_t n,
 
 ngx_int_t ngx_strcasecmp(u_char *s1, u_char *s2);
 ngx_int_t ngx_strncasecmp(u_char *s1, u_char *s2, size_t n);
+void ngx_strlow(u_char *dst, u_char *src, size_t n);
 
 
 /* --- time --- */
