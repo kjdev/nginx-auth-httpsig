@@ -11,6 +11,7 @@
 #include "ngx_auth_httpsig_cache.h"
 #include "ngx_auth_httpsig_directory.h"
 #include "ngx_auth_httpsig_keys.h"
+#include "ngx_auth_httpsig_keys_cache.h"
 #include "ngx_auth_httpsig_profile.h"
 #include "ngx_auth_httpsig_verify.h"
 
@@ -51,9 +52,12 @@ typedef struct {
 } ngx_http_auth_httpsig_loc_conf_t;
 
 typedef struct {
-    ngx_shm_zone_t *shm_zone;
-    ngx_flag_t      dynamic; /* true if the dynamic key directory is
-                              * enabled anywhere in the whole config */
+    ngx_shm_zone_t                *shm_zone;
+    ngx_flag_t                     dynamic;  /* true if the dynamic key
+                                              * directory is enabled
+                                              * anywhere in the whole
+                                              * config */
+    ngx_auth_httpsig_keys_cache_t *local_keys;  /* NULL unless dynamic */
 } ngx_http_auth_httpsig_main_conf_t;
 
 /* done == 1 means "already evaluated this request" (memoizes evaluation
@@ -61,8 +65,8 @@ typedef struct {
  * are only ever set from the RESULT_OK branch of
  * ngx_http_auth_httpsig_evaluate(), so a failed verification always
  * leaves them empty. directory_host/directory_done/claimed/
- * keys_unavailable/directory_reason/jwks/dynamic_keys are set by the
- * dynamic key-directory phase handler, not by evaluate():
+ * keys_unavailable/directory_reason/jwks/directory_generation are set by
+ * the dynamic key-directory phase handler, not by evaluate():
  * directory_done marks that the fetch dance (hit / declined /
  * claimed-and-fetched) has run to completion for this request, claimed
  * marks that this worker currently holds the SHM fetch right for
@@ -72,7 +76,12 @@ typedef struct {
  * response), which evaluate() maps to
  * NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE instead of
  * NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID, and directory_reason records why
- * (only meaningful alongside keys_unavailable). internal_error is set by
+ * (only meaningful alongside keys_unavailable). jwks/directory_generation
+ * identify the fetched document (bytes and SHM generation, respectively)
+ * without parsing it; evaluate() resolves them into a keyset through the
+ * worker-local parse cache, so no parsed-keys pointer is carried in this
+ * struct across the PREACCESS/content boundary (see
+ * ngx_http_auth_httpsig_resolve_keys()). internal_error is set by
  * evaluate() itself, for the NGX_ERROR cases that leave ctx->result at
  * NOT_SIGNED (fail-open) but still deserve a distinct $httpsig_error
  * token from "not signed". */
@@ -89,7 +98,7 @@ typedef struct {
     ngx_str_t                        directory_host;
     ngx_str_t                        jwks;           /* fetched body,
                                                       * r->pool */
-    ngx_auth_httpsig_keys_t         *dynamic_keys;
+    ngx_uint_t                       directory_generation;
 } ngx_http_auth_httpsig_ctx_t;
 
 /* Backstop for ngx_http_auth_httpsig_directory_handler(): if the request
@@ -107,6 +116,7 @@ typedef struct {
 
 static ngx_int_t ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_httpsig_init(ngx_conf_t *cf);
+static ngx_int_t ngx_http_auth_httpsig_init_process(ngx_cycle_t *cycle);
 static void *ngx_http_auth_httpsig_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf,
@@ -144,6 +154,8 @@ static ngx_int_t ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr,
 static void ngx_http_auth_httpsig_directory_cleanup(void *data);
 static ngx_int_t ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_http_auth_httpsig_ctx_t **out);
+static ngx_auth_httpsig_keys_t *ngx_http_auth_httpsig_resolve_keys(
+    ngx_http_request_t *r, ngx_http_auth_httpsig_ctx_t *ctx);
 static ngx_table_elt_t *ngx_http_auth_httpsig_find_header(
     ngx_http_request_t *r, const char *name, size_t len);
 static ngx_int_t ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
@@ -279,7 +291,7 @@ ngx_module_t ngx_http_auth_httpsig_module = {
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
-    NULL,                                  /* init process */
+    ngx_http_auth_httpsig_init_process,    /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
     NULL,                                  /* exit process */
@@ -363,6 +375,31 @@ ngx_http_auth_httpsig_init(ngx_conf_t *cf)
     }
 
     *h = ngx_http_auth_httpsig_directory_handler;
+
+    return NGX_OK;
+}
+
+
+/*
+ * Mirrors the ngx_http_auth_httpsig_init() gate: a worker-local parse
+ * cache is only useful where the dynamic key directory is enabled, so
+ * static-JWKS-only configs allocate nothing here either.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_init_process(ngx_cycle_t *cycle)
+{
+    ngx_http_auth_httpsig_main_conf_t *mcf;
+
+    mcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                              ngx_http_auth_httpsig_module);
+    if (mcf == NULL || !mcf->dynamic) {
+        return NGX_OK;
+    }
+
+    mcf->local_keys = ngx_auth_httpsig_keys_cache_create(cycle->pool);
+    if (mcf->local_keys == NULL) {
+        return NGX_ERROR;
+    }
 
     return NGX_OK;
 }
@@ -1229,7 +1266,8 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
     cache = mcf->shm_zone->data;
 
     if (ngx_auth_httpsig_cache_lookup(cache, r->pool, &host, ngx_time(),
-                                      &jwks, &status, NULL)
+                                      &jwks, &status,
+                                      &ctx->directory_generation)
         != NGX_OK)
     {
         ctx->keys_unavailable = 1;
@@ -1241,18 +1279,11 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
     switch (status) {
 
     case NGX_AUTH_HTTPSIG_CACHE_HIT:
-        if (ngx_auth_httpsig_keys_load_jwks(r->pool, &jwks, &host,
-                                            NGX_LOG_WARN, &ctx->dynamic_keys)
-            != NGX_OK)
-        {
-            /* the cached document was accepted on a previous fetch;
-             * treat a parse failure now (e.g. a pool allocation
-             * failure) the same as no cached keys, rather than as a
-             * reason to refetch. */
-            ctx->keys_unavailable = 1;
-            ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_INVALID;
-        }
-
+        /* Parsing is deferred to evaluate(), which resolves ctx->jwks
+         * through the worker-local parse cache keyed on
+         * ctx->directory_generation instead of reparsing it here on
+         * every request. */
+        ctx->jwks = jwks;
         ctx->directory_done = 1;
         return NGX_DECLINED;
 
@@ -1377,6 +1408,7 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     u_char *p;
     ngx_flag_t accepted;
     ngx_auth_httpsig_fetch_reason_t reason;
+    ngx_auth_httpsig_keys_t *validated;
 
     lcf = ngx_http_get_module_loc_conf(sr, ngx_http_auth_httpsig_module);
     mcf = ngx_http_get_module_main_conf(sr, ngx_http_auth_httpsig_module);
@@ -1521,10 +1553,15 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
             ngx_memcpy(ctx->jwks.data, body.data, body.len);
             ctx->jwks.len = body.len;
 
+            /* Parsed here only to gate the SHM store against a
+             * malformed document; the parsed keyset itself is
+             * discarded -- evaluate() re-resolves ctx->jwks through
+             * the worker-local parse cache, keyed on the generation
+             * cache_store() assigns below, rather than reusing this
+             * pointer (see ngx_http_auth_httpsig_resolve_keys()). */
             if (ngx_auth_httpsig_keys_load_jwks(sr->parent->pool, &ctx->jwks,
                                                 &ctx->directory_host,
-                                                NGX_LOG_WARN,
-                                                &ctx->dynamic_keys)
+                                                NGX_LOG_WARN, &validated)
                 == NGX_OK)
             {
                 ttl = ngx_auth_httpsig_directory_ttl(&cache_control, age,
@@ -1534,7 +1571,8 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
                                                      cache_max_ttl);
 
                 ngx_auth_httpsig_cache_store(cache, &ctx->directory_host,
-                                             &ctx->jwks, now + ttl, NULL);
+                                             &ctx->jwks, now + ttl,
+                                             &ctx->directory_generation);
 
             } else {
                 accepted = 0;
@@ -1583,6 +1621,67 @@ ngx_http_auth_httpsig_directory_cleanup(void *data)
 }
 
 
+/*
+ * Resolves ctx->jwks -- the key-directory document the PREACCESS phase
+ * handler fetched or found cached, identified only by bytes and SHM
+ * generation -- into a parsed keyset for this request. Prefers the
+ * worker-local parse cache (mcf->local_keys) over reparsing, falling
+ * back to a direct parse into r->pool when the cache is unavailable or
+ * generation is 0 (dynamic directory not enabled, or nothing fetched).
+ *
+ * The returned pointer is borrowed from either mcf->local_keys or
+ * r->pool; ngx_http_auth_httpsig_evaluate() uses it up synchronously in
+ * its call into ngx_auth_httpsig_profile_verify() and never stores it
+ * in ctx, so no reference to worker-local memory survives past this
+ * call chain (see ngx_auth_httpsig_keys_cache.c's module comment for
+ * why that matters).
+ *
+ * Returns NULL if ctx->jwks is empty (nothing was fetched) or the
+ * document could not be parsed at all.
+ */
+static ngx_auth_httpsig_keys_t *
+ngx_http_auth_httpsig_resolve_keys(ngx_http_request_t *r,
+    ngx_http_auth_httpsig_ctx_t *ctx)
+{
+    ngx_http_auth_httpsig_main_conf_t *mcf;
+    ngx_auth_httpsig_keys_t *keys;
+
+    if (ctx->jwks.len == 0) {
+        return NULL;
+    }
+
+    mcf = ngx_http_get_module_main_conf(r, ngx_http_auth_httpsig_module);
+
+    if (mcf->local_keys != NULL && ctx->directory_generation != 0) {
+        keys = ngx_auth_httpsig_keys_cache_get(mcf->local_keys,
+                                               &ctx->directory_host,
+                                               ctx->directory_generation);
+        if (keys != NULL) {
+            return keys;
+        }
+
+        if (ngx_auth_httpsig_keys_cache_put(mcf->local_keys,
+                                            &ctx->directory_host, &ctx->jwks,
+                                            ctx->directory_generation,
+                                            r->connection->log, &keys)
+            == NGX_OK)
+        {
+            return keys;
+        }
+    }
+
+    if (ngx_auth_httpsig_keys_load_jwks(r->pool, &ctx->jwks,
+                                        &ctx->directory_host, NGX_LOG_WARN,
+                                        &keys)
+        != NGX_OK)
+    {
+        return NULL;
+    }
+
+    return keys;
+}
+
+
 static ngx_int_t
 ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_http_auth_httpsig_ctx_t **out)
@@ -1593,6 +1692,7 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_auth_httpsig_signature_t sig;
     ngx_auth_httpsig_profile_ctx_t pctx;
     ngx_auth_httpsig_result_t result;
+    ngx_auth_httpsig_keys_t *dynamic_keys;
     ngx_int_t rc;
 
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_httpsig_module);
@@ -1641,7 +1741,14 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
 
     pctx.profile = lcf->profile.def;
 
-    pctx.keys = ngx_auth_httpsig_keys_chain(r->pool, ctx->dynamic_keys,
+    dynamic_keys = ngx_http_auth_httpsig_resolve_keys(r, ctx);
+
+    if (dynamic_keys == NULL && ctx->jwks.len != 0) {
+        ctx->keys_unavailable = 1;
+        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_INVALID;
+    }
+
+    pctx.keys = ngx_auth_httpsig_keys_chain(r->pool, dynamic_keys,
                                             lcf->jwks.keys);
 
     pctx.expires_max = lcf->profile.expires_max;
