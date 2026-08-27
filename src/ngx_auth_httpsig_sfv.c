@@ -57,6 +57,12 @@ static ngx_int_t ngx_auth_httpsig_sfv_read_dictionary(
 static ngx_int_t ngx_auth_httpsig_sfv_read_list(ngx_auth_httpsig_sfv_ctx_t *ctx,
     ngx_auth_httpsig_sfv_list_t *out);
 
+static ngx_int_t ngx_auth_httpsig_sfv_parse_begin(
+    ngx_auth_httpsig_sfv_ctx_t *ctx, ngx_pool_t *pool, const ngx_str_t *input,
+    ngx_auth_httpsig_sfv_error_t *err);
+static ngx_int_t ngx_auth_httpsig_sfv_parse_end(
+    ngx_auth_httpsig_sfv_ctx_t *ctx);
+
 static ngx_int_t ngx_auth_httpsig_sfv_wbuf_init(ngx_auth_httpsig_sfv_wbuf_t *w,
     ngx_pool_t *pool);
 static ngx_int_t ngx_auth_httpsig_sfv_wbuf_put(ngx_auth_httpsig_sfv_wbuf_t *w,
@@ -862,6 +868,12 @@ ngx_auth_httpsig_sfv_wbuf_putc(ngx_auth_httpsig_sfv_wbuf_t *w, u_char c)
 }
 
 
+/*
+ * Snapshots the array's current backing storage. The caller must not
+ * push to w after this: ngx_array_push() may ngx_palloc() a larger
+ * backing store and copy, which would leave *out pointing at the stale,
+ * now-orphaned allocation.
+ */
 static void
 ngx_auth_httpsig_sfv_wbuf_finish(ngx_auth_httpsig_sfv_wbuf_t *w, ngx_str_t *out)
 {
@@ -1135,14 +1147,16 @@ ngx_auth_httpsig_sfv_write_inner_list(ngx_auth_httpsig_sfv_wbuf_t *w,
 }
 
 
-ngx_int_t
-ngx_auth_httpsig_sfv_parse_dictionary(ngx_pool_t *pool, const ngx_str_t *input,
-    ngx_auth_httpsig_sfv_dictionary_t **out, ngx_auth_httpsig_sfv_error_t *err)
+/*
+ * Shared prologue for the parse_* entry points: bounds-checks the input,
+ * resets ctx to scan it from the start, and skips leading SP. Returns
+ * NGX_DECLINED (with *err set) if input exceeds the length limit.
+ */
+static ngx_int_t
+ngx_auth_httpsig_sfv_parse_begin(ngx_auth_httpsig_sfv_ctx_t *ctx,
+    ngx_pool_t *pool, const ngx_str_t *input,
+    ngx_auth_httpsig_sfv_error_t *err)
 {
-    ngx_auth_httpsig_sfv_ctx_t ctx;
-    ngx_auth_httpsig_sfv_dictionary_t *dict;
-    ngx_int_t rc;
-
     if (input->len > NGX_AUTH_HTTPSIG_MAX_SFV_LENGTH) {
         if (err != NULL) {
             err->offset = 0;
@@ -1152,29 +1166,62 @@ ngx_auth_httpsig_sfv_parse_dictionary(ngx_pool_t *pool, const ngx_str_t *input,
         return NGX_DECLINED;
     }
 
-    ngx_memzero(&ctx, sizeof(ngx_auth_httpsig_sfv_ctx_t));
-    ctx.pool = pool;
-    ctx.start = input->data;
-    ctx.pos = input->data;
-    ctx.last = input->data + input->len;
-    ctx.err = err;
+    ngx_memzero(ctx, sizeof(ngx_auth_httpsig_sfv_ctx_t));
+    ctx->pool = pool;
+    ctx->start = input->data;
+    ctx->pos = input->data;
+    ctx->last = input->data + input->len;
+    ctx->err = err;
+
+    ngx_auth_httpsig_sfv_skip_sp(ctx);
+
+    return NGX_OK;
+}
+
+
+/*
+ * Shared epilogue: skips trailing SP and rejects anything left over as
+ * trailing data.
+ */
+static ngx_int_t
+ngx_auth_httpsig_sfv_parse_end(ngx_auth_httpsig_sfv_ctx_t *ctx)
+{
+    ngx_auth_httpsig_sfv_skip_sp(ctx);
+
+    if (ctx->pos != ctx->last) {
+        return ngx_auth_httpsig_sfv_fail(ctx, "trailing data");
+    }
+
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_auth_httpsig_sfv_parse_dictionary(ngx_pool_t *pool, const ngx_str_t *input,
+    ngx_auth_httpsig_sfv_dictionary_t **out, ngx_auth_httpsig_sfv_error_t *err)
+{
+    ngx_auth_httpsig_sfv_ctx_t ctx;
+    ngx_auth_httpsig_sfv_dictionary_t *dict;
+    ngx_int_t rc;
+
+    rc = ngx_auth_httpsig_sfv_parse_begin(&ctx, pool, input, err);
+    if (rc != NGX_OK) {
+        return rc;
+    }
 
     dict = ngx_pcalloc(pool, sizeof(ngx_auth_httpsig_sfv_dictionary_t));
     if (dict == NULL) {
         return NGX_ERROR;
     }
 
-    ngx_auth_httpsig_sfv_skip_sp(&ctx);
-
     rc = ngx_auth_httpsig_sfv_read_dictionary(&ctx, dict);
     if (rc != NGX_OK) {
         return rc;
     }
 
-    ngx_auth_httpsig_sfv_skip_sp(&ctx);
-
-    if (ctx.pos != ctx.last) {
-        return ngx_auth_httpsig_sfv_fail(&ctx, "trailing data");
+    rc = ngx_auth_httpsig_sfv_parse_end(&ctx);
+    if (rc != NGX_OK) {
+        return rc;
     }
 
     *out = dict;
@@ -1191,38 +1238,24 @@ ngx_auth_httpsig_sfv_parse_list(ngx_pool_t *pool, const ngx_str_t *input,
     ngx_auth_httpsig_sfv_list_t *list;
     ngx_int_t rc;
 
-    if (input->len > NGX_AUTH_HTTPSIG_MAX_SFV_LENGTH) {
-        if (err != NULL) {
-            err->offset = 0;
-            err->reason = "input too long";
-        }
-
-        return NGX_DECLINED;
+    rc = ngx_auth_httpsig_sfv_parse_begin(&ctx, pool, input, err);
+    if (rc != NGX_OK) {
+        return rc;
     }
-
-    ngx_memzero(&ctx, sizeof(ngx_auth_httpsig_sfv_ctx_t));
-    ctx.pool = pool;
-    ctx.start = input->data;
-    ctx.pos = input->data;
-    ctx.last = input->data + input->len;
-    ctx.err = err;
 
     list = ngx_pcalloc(pool, sizeof(ngx_auth_httpsig_sfv_list_t));
     if (list == NULL) {
         return NGX_ERROR;
     }
 
-    ngx_auth_httpsig_sfv_skip_sp(&ctx);
-
     rc = ngx_auth_httpsig_sfv_read_list(&ctx, list);
     if (rc != NGX_OK) {
         return rc;
     }
 
-    ngx_auth_httpsig_sfv_skip_sp(&ctx);
-
-    if (ctx.pos != ctx.last) {
-        return ngx_auth_httpsig_sfv_fail(&ctx, "trailing data");
+    rc = ngx_auth_httpsig_sfv_parse_end(&ctx);
+    if (rc != NGX_OK) {
+        return rc;
     }
 
     *out = list;
@@ -1239,38 +1272,24 @@ ngx_auth_httpsig_sfv_parse_item(ngx_pool_t *pool, const ngx_str_t *input,
     ngx_auth_httpsig_sfv_item_t *item;
     ngx_int_t rc;
 
-    if (input->len > NGX_AUTH_HTTPSIG_MAX_SFV_LENGTH) {
-        if (err != NULL) {
-            err->offset = 0;
-            err->reason = "input too long";
-        }
-
-        return NGX_DECLINED;
+    rc = ngx_auth_httpsig_sfv_parse_begin(&ctx, pool, input, err);
+    if (rc != NGX_OK) {
+        return rc;
     }
-
-    ngx_memzero(&ctx, sizeof(ngx_auth_httpsig_sfv_ctx_t));
-    ctx.pool = pool;
-    ctx.start = input->data;
-    ctx.pos = input->data;
-    ctx.last = input->data + input->len;
-    ctx.err = err;
 
     item = ngx_pcalloc(pool, sizeof(ngx_auth_httpsig_sfv_item_t));
     if (item == NULL) {
         return NGX_ERROR;
     }
 
-    ngx_auth_httpsig_sfv_skip_sp(&ctx);
-
     rc = ngx_auth_httpsig_sfv_read_item(&ctx, item);
     if (rc != NGX_OK) {
         return rc;
     }
 
-    ngx_auth_httpsig_sfv_skip_sp(&ctx);
-
-    if (ctx.pos != ctx.last) {
-        return ngx_auth_httpsig_sfv_fail(&ctx, "trailing data");
+    rc = ngx_auth_httpsig_sfv_parse_end(&ctx);
+    if (rc != NGX_OK) {
+        return rc;
     }
 
     *out = item;
