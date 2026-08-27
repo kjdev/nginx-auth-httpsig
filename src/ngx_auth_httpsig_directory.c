@@ -32,6 +32,8 @@ static time_t ngx_auth_httpsig_directory_parse_uint(u_char *p, size_t len,
     size_t *consumed);
 static ngx_int_t ngx_auth_httpsig_directory_parse_directive(
     const ngx_str_t *token, const char *name, time_t *value);
+static ngx_flag_t ngx_auth_httpsig_directory_media_type_matches(
+    const ngx_str_t *type, const ngx_str_t *media_type);
 
 
 ngx_int_t
@@ -271,6 +273,28 @@ ngx_auth_httpsig_directory_token_is(const ngx_str_t *token, const char *name)
 }
 
 
+/* Accepts the configured `media_type` (case-insensitive exact match)
+ * as well as bare "application/json", since a key directory is valid
+ * JSON served under either content type. */
+static ngx_flag_t
+ngx_auth_httpsig_directory_media_type_matches(const ngx_str_t *type,
+    const ngx_str_t *media_type)
+{
+    if (type->len == 0) {
+        return 0;
+    }
+
+    if (media_type != NULL && media_type->len > 0
+        && type->len == media_type->len
+        && ngx_strncasecmp(type->data, media_type->data, type->len) == 0)
+    {
+        return 1;
+    }
+
+    return ngx_auth_httpsig_directory_token_is(type, "application/json");
+}
+
+
 /* Hand-rolled instead of ngx_atoi(): ngx_atoi() is unavailable in the
  * unit-test shim and, in production, returns NGX_ERROR on overflow,
  * which would send an enormous max-age down the "unparseable" path
@@ -347,12 +371,7 @@ ngx_auth_httpsig_directory_check_response(const ngx_str_t *schema,
 
     ngx_auth_httpsig_directory_trim(&type);
 
-    if (type.len == 0
-        || !((media_type != NULL && media_type->len > 0
-              && type.len == media_type->len
-              && ngx_strncasecmp(type.data, media_type->data, type.len) == 0)
-             || ngx_auth_httpsig_directory_token_is(&type, "application/json")))
-    {
+    if (!ngx_auth_httpsig_directory_media_type_matches(&type, media_type)) {
         *reason = NGX_AUTH_HTTPSIG_FETCH_MEDIA_TYPE;
         return NGX_DECLINED;
     }
