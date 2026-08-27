@@ -41,10 +41,13 @@ static const ngx_auth_httpsig_profile_t ngx_auth_httpsig_profiles[] = {
 /* Maps a covered-component identifier to the bit it sets in
  * ngx_auth_httpsig_signature_t.covered. Components with no bit (an
  * arbitrary HTTP field) simply never match this table. */
-static const struct {
+typedef struct {
     ngx_str_t   name;
     ngx_uint_t  bit;
-} ngx_auth_httpsig_profile_components[] = {
+} ngx_auth_httpsig_profile_component_t;
+
+static const ngx_auth_httpsig_profile_component_t
+    ngx_auth_httpsig_profile_components[] = {
 
     { ngx_string("@method"),          NGX_AUTH_HTTPSIG_COMP_METHOD },
     { ngx_string("@target-uri"),      NGX_AUTH_HTTPSIG_COMP_TARGET_URI },
@@ -453,6 +456,7 @@ static ngx_uint_t
 ngx_auth_httpsig_profile_covered_components(const ngx_array_t *items)
 {
     ngx_auth_httpsig_sfv_item_t *item;
+    const ngx_auth_httpsig_profile_component_t *comp;
     ngx_uint_t i, j, covered;
 
     covered = 0;
@@ -467,11 +471,10 @@ ngx_auth_httpsig_profile_covered_components(const ngx_array_t *items)
              j < NGX_AUTH_HTTPSIG_NELTS(ngx_auth_httpsig_profile_components);
              j++)
         {
-            if (ngx_auth_httpsig_str_eq(&item[i].bare.value,
-                                        &ngx_auth_httpsig_profile_components[j].
-                                        name))
-            {
-                covered |= ngx_auth_httpsig_profile_components[j].bit;
+            comp = &ngx_auth_httpsig_profile_components[j];
+
+            if (ngx_auth_httpsig_str_eq(&item[i].bare.value, &comp->name)) {
+                covered |= comp->bit;
                 break;
             }
         }

@@ -34,6 +34,9 @@ static ngx_int_t ngx_auth_httpsig_directory_parse_directive(
     const ngx_str_t *token, const char *name, time_t *value);
 static ngx_flag_t ngx_auth_httpsig_directory_media_type_matches(
     const ngx_str_t *type, const ngx_str_t *media_type);
+static void ngx_auth_httpsig_directory_apply_directive(
+    const ngx_str_t *token, ngx_flag_t *forbid, ngx_flag_t *have_maxage,
+    time_t *maxage_val, ngx_flag_t *have_smaxage, time_t *smaxage_val);
 
 
 ngx_int_t
@@ -135,6 +138,39 @@ ngx_auth_httpsig_directory_allowed(const ngx_array_t *allow,
 }
 
 
+/*
+ * Applies one Cache-Control token's effect to the running ttl state.
+ * Factored out of ngx_auth_httpsig_directory_ttl() so the
+ * parse_directive() calls sit at one indent level instead of three,
+ * which is what pushed uncrustify into wrapping "&smaxage_val" onto
+ * its own line and made it misreadable as "&&".
+ */
+static void
+ngx_auth_httpsig_directory_apply_directive(const ngx_str_t *token,
+    ngx_flag_t *forbid, ngx_flag_t *have_maxage, time_t *maxage_val,
+    ngx_flag_t *have_smaxage, time_t *smaxage_val)
+{
+    if (ngx_auth_httpsig_directory_token_is(token, "no-store")
+        || ngx_auth_httpsig_directory_token_is(token, "no-cache")
+        || ngx_auth_httpsig_directory_token_is(token, "private"))
+    {
+        *forbid = 1;
+
+    } else if (ngx_auth_httpsig_directory_parse_directive(token, "s-maxage",
+                                                          smaxage_val)
+               == NGX_OK)
+    {
+        *have_smaxage = 1;
+
+    } else if (ngx_auth_httpsig_directory_parse_directive(token, "max-age",
+                                                          maxage_val)
+               == NGX_OK)
+    {
+        *have_maxage = 1;
+    }
+}
+
+
 time_t
 ngx_auth_httpsig_directory_ttl(const ngx_str_t *cache_control, time_t age,
     time_t min_ttl, time_t max_ttl)
@@ -166,29 +202,11 @@ ngx_auth_httpsig_directory_ttl(const ngx_str_t *cache_control, time_t age,
             ngx_auth_httpsig_directory_trim(&token);
 
             if (token.len > 0) {
-                if (ngx_auth_httpsig_directory_token_is(&token, "no-store")
-                    || ngx_auth_httpsig_directory_token_is(&token,
-                                                           "no-cache")
-                    || ngx_auth_httpsig_directory_token_is(&token, "private"))
-                {
-                    forbid = 1;
-
-                } else if (ngx_auth_httpsig_directory_parse_directive(&token,
-                                                                      "s-maxage",
-                                                                      &
-                                                                      smaxage_val)
-                           == NGX_OK)
-                {
-                    have_smaxage = 1;
-
-                } else if (ngx_auth_httpsig_directory_parse_directive(&token,
-                                                                      "max-age",
-                                                                      &
-                                                                      maxage_val)
-                           == NGX_OK)
-                {
-                    have_maxage = 1;
-                }
+                ngx_auth_httpsig_directory_apply_directive(&token, &forbid,
+                                                           &have_maxage,
+                                                           &maxage_val,
+                                                           &have_smaxage,
+                                                           &smaxage_val);
             }
 
             if (p < end) {
