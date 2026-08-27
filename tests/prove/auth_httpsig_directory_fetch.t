@@ -179,6 +179,41 @@ $HttpConfig .= <<"_EOC_";
     }
 _EOC_
 
+# Two more mock origins for the location-scoping regression test below:
+# both return the same valid, small JWKS body used by directory-ok,
+# so the only variable between the two protected locations
+# that use them is the auth_httpsig directive scoped to that location, not
+# the response itself.
+$HttpConfig .= <<'_EOC_';
+    server {
+        listen  127.0.0.1:18452 ssl;
+        server_name  directory-locsize;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18453 ssl;
+        server_name  directory-locttl;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+_EOC_
+
 our $MainConfig = <<'_EOC_';
     auth_httpsig_mode                   observe;
     auth_httpsig_key_directory_request  /httpsig_fetch;
@@ -254,6 +289,52 @@ our $SmallBufferConfig = <<'_EOC_';
         auth_httpsig_trusted_agent     off;
         resolver                       1.1.1.1;
         subrequest_output_buffer_size  1k;
+        proxy_ssl_verify                off;
+        proxy_ssl_server_name           on;
+        proxy_ssl_name                  $httpsig_directory_host;
+        proxy_set_header                Host $httpsig_directory_host;
+        proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
+    }
+_EOC_
+
+# Same shape as $MainConfig, but auth_httpsig_key_directory_max_size and
+# auth_httpsig_key_cache_min_ttl are each scoped to one protected location
+# only, with the internal fetch location left on its inherited (smaller)
+# http-level values. Regression coverage:
+# these directives must be read from the protected location's config in
+# ngx_http_auth_httpsig_directory_done(), not from whichever config the
+# fetch subrequest's own find-config phase resolved for /httpsig_fetch.
+our $LocScopeConfig = <<'_EOC_';
+    auth_httpsig_mode                   observe;
+    auth_httpsig_key_directory_request  /httpsig_fetch;
+    auth_httpsig_trusted_agent
+        127.0.0.1:18452
+        127.0.0.1:18453;
+
+    location /t_size {
+        default_type                        text/plain;
+        sub_filter_types                    text/plain;
+        sub_filter    'RESPONSE_MARKER'  'verified:$httpsig_verified error:$httpsig_error';
+        sub_filter_once                     on;
+        auth_httpsig_key_directory_max_size 32;
+        proxy_pass  http://127.0.0.1:18449/marker;
+    }
+
+    location /t_ttl {
+        default_type                    text/plain;
+        sub_filter_types                text/plain;
+        sub_filter    'RESPONSE_MARKER'  'verified:$httpsig_verified error:$httpsig_error';
+        sub_filter_once                 on;
+        auth_httpsig_key_cache_min_ttl  30;
+        proxy_pass  http://127.0.0.1:18449/marker;
+    }
+
+    location = /httpsig_fetch {
+        internal;
+        auth_httpsig_mode              off;
+        auth_httpsig_trusted_agent     off;
+        resolver                       1.1.1.1;
+        subrequest_output_buffer_size  128k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
         proxy_ssl_name                  $httpsig_directory_host;
@@ -546,3 +627,52 @@ verified:1 error:
 --- grep_error_log_out
 18451 GET /.well-known/http-message-signatures-directory
 18451 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 17: auth_httpsig_key_directory_max_size scoped to the protected location is enforced, not the fetch location's inherited default
+--- http_config eval: $::HttpConfig
+--- config eval: $::LocScopeConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18452', '/t_size')
+--- request
+GET /t_size
+--- error_code: 200
+--- response_body chomp
+verified: error:directory_too_large
+
+
+
+=== TEST 18: auth_httpsig_key_cache_min_ttl scoped to the protected location is honored, not the fetch location's inherited (shorter) default
+--- http_config eval: $::HttpConfig
+--- config eval: $::LocScopeConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18453', '/t_ttl')
+--- request
+GET /t_ttl
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18453 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18453 GET /.well-known/http-message-signatures-directory
+--- wait: 3
+
+
+
+=== TEST 19: the request in TEST 18 is still cached past the fetch location's inherited 2s TTL, because the effective TTL was the protected location's 30s
+--- http_config eval: $::HttpConfig
+--- config eval: $::LocScopeConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18453', '/t_ttl')
+--- request
+GET /t_ttl
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18453 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18453 GET /.well-known/http-message-signatures-directory
