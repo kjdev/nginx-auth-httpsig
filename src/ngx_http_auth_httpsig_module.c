@@ -136,6 +136,10 @@ static char *ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static void ngx_http_auth_httpsig_cleanup_keys(void *data);
 
+static ngx_int_t ngx_http_auth_httpsig_variable_unset(
+    ngx_http_variable_value_t *v);
+static ngx_int_t ngx_http_auth_httpsig_variable_set(
+    ngx_http_variable_value_t *v, u_char *data, size_t len);
 static ngx_int_t ngx_http_auth_httpsig_variable_verified(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_auth_httpsig_variable_keyid(
@@ -1807,6 +1811,29 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
 
 
 static ngx_int_t
+ngx_http_auth_httpsig_variable_unset(ngx_http_variable_value_t *v)
+{
+    v->not_found = 1;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_auth_httpsig_variable_set(ngx_http_variable_value_t *v,
+    u_char *data, size_t len)
+{
+    v->data = data;
+    v->len = len;
+    v->valid = 1;
+    v->no_cacheable = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
 ngx_http_auth_httpsig_variable_verified(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
 {
@@ -1816,18 +1843,13 @@ ngx_http_auth_httpsig_variable_verified(ngx_http_request_t *r,
         || ctx->result == NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED
         || ctx->result == NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE)
     {
-        v->not_found = 1;
-        return NGX_OK;
+        return ngx_http_auth_httpsig_variable_unset(v);
     }
 
-    v->data = (ctx->result == NGX_AUTH_HTTPSIG_RESULT_OK)
-              ? (u_char *) "1" : (u_char *) "0";
-    v->len = 1;
-    v->valid = 1;
-    v->no_cacheable = 1;
-    v->not_found = 0;
-
-    return NGX_OK;
+    return ngx_http_auth_httpsig_variable_set(v,
+                                              (ctx->result ==
+                                               NGX_AUTH_HTTPSIG_RESULT_OK)
+        ? (u_char *) "1" : (u_char *) "0", 1);
 }
 
 
@@ -1840,17 +1862,11 @@ ngx_http_auth_httpsig_variable_keyid(ngx_http_request_t *r,
     if (ngx_http_auth_httpsig_evaluate(r, &ctx) != NGX_OK || ctx == NULL
         || ctx->result != NGX_AUTH_HTTPSIG_RESULT_OK)
     {
-        v->not_found = 1;
-        return NGX_OK;
+        return ngx_http_auth_httpsig_variable_unset(v);
     }
 
-    v->data = ctx->keyid.data;
-    v->len = ctx->keyid.len;
-    v->valid = 1;
-    v->no_cacheable = 1;
-    v->not_found = 0;
-
-    return NGX_OK;
+    return ngx_http_auth_httpsig_variable_set(v, ctx->keyid.data,
+                                              ctx->keyid.len);
 }
 
 
@@ -1864,17 +1880,11 @@ ngx_http_auth_httpsig_variable_agent(ngx_http_request_t *r,
         || ctx->result != NGX_AUTH_HTTPSIG_RESULT_OK
         || ctx->agent.len == 0)
     {
-        v->not_found = 1;
-        return NGX_OK;
+        return ngx_http_auth_httpsig_variable_unset(v);
     }
 
-    v->data = ctx->agent.data;
-    v->len = ctx->agent.len;
-    v->valid = 1;
-    v->no_cacheable = 1;
-    v->not_found = 0;
-
-    return NGX_OK;
+    return ngx_http_auth_httpsig_variable_set(v, ctx->agent.data,
+                                              ctx->agent.len);
 }
 
 
@@ -1899,17 +1909,11 @@ ngx_http_auth_httpsig_variable_directory_host(ngx_http_request_t *r,
     ctx = ngx_http_get_module_ctx(r->main, ngx_http_auth_httpsig_module);
 
     if (ctx == NULL || ctx->directory_host.len == 0) {
-        v->not_found = 1;
-        return NGX_OK;
+        return ngx_http_auth_httpsig_variable_unset(v);
     }
 
-    v->data = ctx->directory_host.data;
-    v->len = ctx->directory_host.len;
-    v->valid = 1;
-    v->no_cacheable = 1;
-    v->not_found = 0;
-
-    return NGX_OK;
+    return ngx_http_auth_httpsig_variable_set(v, ctx->directory_host.data,
+                                              ctx->directory_host.len);
 }
 
 
@@ -1928,8 +1932,7 @@ ngx_http_auth_httpsig_variable_error(ngx_http_request_t *r,
     const char *name;
 
     if (ngx_http_auth_httpsig_evaluate(r, &ctx) != NGX_OK || ctx == NULL) {
-        v->not_found = 1;
-        return NGX_OK;
+        return ngx_http_auth_httpsig_variable_unset(v);
     }
 
     if (ctx->internal_error) {
@@ -1938,8 +1941,7 @@ ngx_http_auth_httpsig_variable_error(ngx_http_request_t *r,
     } else if (ctx->result == NGX_AUTH_HTTPSIG_RESULT_OK
                || ctx->result == NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED)
     {
-        v->not_found = 1;
-        return NGX_OK;
+        return ngx_http_auth_httpsig_variable_unset(v);
 
     } else if (ctx->result == NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE
                && ctx->directory_reason != NGX_AUTH_HTTPSIG_FETCH_OK)
@@ -1950,11 +1952,6 @@ ngx_http_auth_httpsig_variable_error(ngx_http_request_t *r,
         name = ngx_auth_httpsig_result_name(ctx->result);
     }
 
-    v->data = (u_char *) name;
-    v->len = ngx_strlen(name);
-    v->valid = 1;
-    v->no_cacheable = 1;
-    v->not_found = 0;
-
-    return NGX_OK;
+    return ngx_http_auth_httpsig_variable_set(v, (u_char *) name,
+                                              ngx_strlen(name));
 }
