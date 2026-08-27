@@ -244,6 +244,7 @@ ngx_auth_httpsig_keys_cache_slot_for(ngx_auth_httpsig_keys_cache_t *kc,
 static void
 ngx_auth_httpsig_keys_cache_evict(ngx_auth_httpsig_keys_cache_slot_t *slot)
 {
+    ngx_auth_httpsig_keys_free(slot->keys);
     ngx_destroy_pool(slot->pool);
 
     slot->pool = NULL;
@@ -260,6 +261,7 @@ ngx_auth_httpsig_keys_cache_cleanup(void *data)
 
     for (i = 0; i < NGX_AUTH_HTTPSIG_MAX_KEYS_CACHE_ENTRIES; i++) {
         if (kc->slots[i].pool != NULL) {
+            ngx_auth_httpsig_keys_free(kc->slots[i].keys);
             ngx_destroy_pool(kc->slots[i].pool);
         }
     }
