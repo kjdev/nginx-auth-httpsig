@@ -17,6 +17,7 @@ SRCS = test_main.c \
        test_profile.c \
        test_directory.c \
        test_cache.c \
+       test_keys_cache.c \
        test_crypto.c \
        ngx_compat/ngx_stub.c \
        ngx_compat/ngx_rbtree.c \
