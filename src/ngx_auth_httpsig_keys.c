@@ -28,6 +28,8 @@
 
 static ngx_int_t ngx_auth_httpsig_keys_check_ed25519_only(
     const ngx_str_t *jwks_json, ngx_pool_t *pool, ngx_uint_t log_level);
+static ngx_int_t ngx_auth_httpsig_keys_check_ed25519_only_body(
+    nxe_json_t *root, ngx_pool_t *pool, ngx_uint_t log_level);
 
 static ngx_flag_t ngx_auth_httpsig_keys_jwks_has(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid);
@@ -219,10 +221,8 @@ static ngx_int_t
 ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
     ngx_pool_t *pool, ngx_uint_t log_level)
 {
-    size_t i, n;
-    ngx_str_t kty, crv;
     ngx_int_t rc;
-    nxe_json_t *root, *keys, *key;
+    nxe_json_t *root;
 
     root = nxe_json_parse((ngx_str_t *) jwks_json, pool);
     if (root == NULL) {
@@ -231,10 +231,26 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
         return NGX_ERROR;
     }
 
+    rc = ngx_auth_httpsig_keys_check_ed25519_only_body(root, pool, log_level);
+
+    nxe_json_free(root);
+
+    return rc;
+}
+
+
+static ngx_int_t
+ngx_auth_httpsig_keys_check_ed25519_only_body(nxe_json_t *root,
+    ngx_pool_t *pool, ngx_uint_t log_level)
+{
+    size_t i, n;
+    ngx_str_t kty, crv;
+    ngx_int_t rc;
+    nxe_json_t *keys, *key;
+
     if (!nxe_json_is_object(root)) {
         ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: JWKS document is not a JSON object");
-        nxe_json_free(root);
         return NGX_ERROR;
     }
 
@@ -242,7 +258,6 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
     if (keys == NULL || !nxe_json_is_array(keys)) {
         ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: JWKS document has no \"keys\" array");
-        nxe_json_free(root);
         return NGX_ERROR;
     }
 
@@ -252,7 +267,6 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
         ngx_log_error(log_level, pool->log, 0,
                       "auth_httpsig: JWKS document has more than %ui keys",
                       (ngx_uint_t) NGX_AUTH_HTTPSIG_MAX_JWKS_KEYS);
-        nxe_json_free(root);
         return NGX_ERROR;
     }
 
@@ -269,7 +283,6 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
                           "auth_httpsig: JWKS key %ui is not an Ed25519 "
                           "(OKP) key; only Ed25519 keys are supported",
                           (ngx_uint_t) i);
-            nxe_json_free(root);
             return NGX_ERROR;
         }
 
@@ -282,12 +295,9 @@ ngx_auth_httpsig_keys_check_ed25519_only(const ngx_str_t *jwks_json,
             ngx_log_error(log_level, pool->log, 0,
                           "auth_httpsig: JWKS key %ui does not use the "
                           "Ed25519 curve", (ngx_uint_t) i);
-            nxe_json_free(root);
             return NGX_ERROR;
         }
     }
-
-    nxe_json_free(root);
 
     return NGX_OK;
 }
