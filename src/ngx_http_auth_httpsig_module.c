@@ -754,6 +754,15 @@ ngx_http_auth_httpsig_set_alg(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+static ngx_flag_t
+ngx_http_auth_httpsig_arg_is_off(const ngx_str_t *value)
+{
+    return value->len == sizeof("off") - 1
+           && ngx_strncasecmp(value->data, (u_char *) "off",
+                              sizeof("off") - 1) == 0;
+}
+
+
 /*
  * "off" is a single-argument form that allocates an empty array to mean
  * "explicitly discard whatever the parent block would otherwise
@@ -780,16 +789,11 @@ ngx_http_auth_httpsig_set_trusted_agent(ngx_conf_t *cf, ngx_command_t *cmd,
     value = cf->args->elts;
 
     is_off = (cf->args->nelts == 2
-              && value[1].len == sizeof("off") - 1
-              && ngx_strncasecmp(value[1].data, (u_char *) "off",
-                                 sizeof("off") - 1) == 0);
+              && ngx_http_auth_httpsig_arg_is_off(&value[1]));
 
     if (!is_off) {
         for (i = 1; i < cf->args->nelts; i++) {
-            if (value[i].len == sizeof("off") - 1
-                && ngx_strncasecmp(value[i].data, (u_char *) "off",
-                                   sizeof("off") - 1) == 0)
-            {
+            if (ngx_http_auth_httpsig_arg_is_off(&value[i])) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "auth_httpsig: \"off\" cannot be "
                                    "combined with hostnames in "
