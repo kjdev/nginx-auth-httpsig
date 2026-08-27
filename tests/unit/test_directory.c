@@ -151,6 +151,87 @@ TEST(directory_normalize_rejects_empty)
 }
 
 
+TEST(directory_normalize_accepts_bracketed_ipv6)
+{
+    ngx_str_t out;
+
+    ASSERT_EQ_INT(NGX_OK,
+        normalize(pool, "[::1]", &out, NULL));
+    ASSERT_STR_EQ(out, "[::1]");
+
+    return 0;
+}
+
+
+TEST(directory_normalize_accepts_bracketed_ipv6_with_port)
+{
+    ngx_str_t out;
+
+    ASSERT_EQ_INT(NGX_OK,
+        normalize(pool, "[2001:DB8::1]:8443", &out, NULL));
+    ASSERT_STR_EQ(out, "[2001:db8::1]:8443");
+
+    return 0;
+}
+
+
+TEST(directory_normalize_strips_default_https_port_on_ipv6)
+{
+    ngx_str_t out;
+
+    ASSERT_EQ_INT(NGX_OK,
+        normalize(pool, "[::1]:443", &out, NULL));
+    ASSERT_STR_EQ(out, "[::1]");
+
+    return 0;
+}
+
+
+TEST(directory_normalize_rejects_unclosed_bracket)
+{
+    ngx_str_t                       out;
+    ngx_auth_httpsig_host_reason_t  reason;
+
+    reason = 0;
+
+    ASSERT_EQ_INT(NGX_ERROR,
+        normalize(pool, "[::1", &out, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_HOST_INVALID_CHAR, reason);
+
+    return 0;
+}
+
+
+TEST(directory_normalize_rejects_empty_brackets)
+{
+    ngx_str_t                       out;
+    ngx_auth_httpsig_host_reason_t  reason;
+
+    reason = 0;
+
+    ASSERT_EQ_INT(NGX_ERROR,
+        normalize(pool, "[]", &out, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_HOST_INVALID_CHAR, reason);
+
+    return 0;
+}
+
+
+TEST(directory_normalize_rejects_bracket_with_invalid_char)
+{
+    ngx_str_t                       out;
+    ngx_auth_httpsig_host_reason_t  reason;
+
+    reason = 0;
+
+    ASSERT_EQ_INT(NGX_ERROR,
+        normalize(pool, "[::1/xyz]", &out, &reason));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_HOST_INVALID_CHAR, reason);
+
+    return 0;
+}
+
+
 TEST(directory_allowed_exact_match)
 {
     ngx_array_t *allow;
@@ -284,6 +365,19 @@ TEST(directory_ttl_unparseable_is_floor)
     ngx_str_t cc;
 
     cc = str("max-age=abc");
+
+    ASSERT_EQ_INT(TEST_MIN_TTL,
+        ngx_auth_httpsig_directory_ttl(&cc, 0, TEST_MIN_TTL, TEST_MAX_TTL));
+
+    return 0;
+}
+
+
+TEST(directory_ttl_max_age_trailing_junk_is_floor)
+{
+    ngx_str_t cc;
+
+    cc = str("max-age=3600junk");
 
     ASSERT_EQ_INT(TEST_MIN_TTL,
         ngx_auth_httpsig_directory_ttl(&cc, 0, TEST_MIN_TTL, TEST_MAX_TTL));
@@ -600,6 +694,12 @@ TEST_SUITE(directory)
     RUN(directory_normalize_rejects_path);
     RUN(directory_normalize_rejects_userinfo);
     RUN(directory_normalize_rejects_empty);
+    RUN(directory_normalize_accepts_bracketed_ipv6);
+    RUN(directory_normalize_accepts_bracketed_ipv6_with_port);
+    RUN(directory_normalize_strips_default_https_port_on_ipv6);
+    RUN(directory_normalize_rejects_unclosed_bracket);
+    RUN(directory_normalize_rejects_empty_brackets);
+    RUN(directory_normalize_rejects_bracket_with_invalid_char);
     RUN(directory_allowed_exact_match);
     RUN(directory_allowed_rejects_prefix_variant);
     RUN(directory_allowed_rejects_suffix_variant);
@@ -610,6 +710,7 @@ TEST_SUITE(directory)
     RUN(directory_ttl_no_cache_is_floor);
     RUN(directory_ttl_private_is_floor);
     RUN(directory_ttl_unparseable_is_floor);
+    RUN(directory_ttl_max_age_trailing_junk_is_floor);
     RUN(directory_ttl_max_age_within_bounds);
     RUN(directory_ttl_max_age_clamped_to_ceiling);
     RUN(directory_ttl_s_maxage_takes_priority);

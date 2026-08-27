@@ -7,9 +7,12 @@ use File::Temp qw(tempdir);
 
 # Cache-reuse/TTL assertions below depend on the SHM zone surviving across
 # blocks, which requires nginx to NOT restart between them. Test::Nginx
-# restarts by default; since every block here shares the same http/main
-# config text, disabling the forced restart makes it reconfig-only (no
-# restart) instead.
+# restarts by default; disabling the forced restart makes consecutive
+# blocks with identical http/main config text reconfig-only (no restart).
+#
+# TEST 12 is the one exception: it uses $SmallBufferConfig, so nginx does
+# restart around it and both caches are dropped. Any new cache-continuity
+# assertion must stay inside a run of blocks that share one config text.
 BEGIN { $ENV{TEST_NGINX_FORCE_RESTART_ON_TEST} = 0; }
 
 use Test::Nginx::Socket 'no_plan';
