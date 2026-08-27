@@ -216,6 +216,8 @@ _EOC_
 # Rewrites the "directory-rotate" origin's fixture (see $RotateFile above)
 # via a real PUT request, so the rewrite happens exactly where it appears in
 # the test file's request order instead of racing Test::Base's eval parsing.
+# Requires nginx built with --with-http_dav_module (distro packages
+# typically enable it; a minimal source build may not).
 $MainConfig .= <<"_EOC_";
     location = /rotate {
         dav_methods  PUT;
