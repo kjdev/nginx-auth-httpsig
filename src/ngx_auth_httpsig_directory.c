@@ -25,6 +25,7 @@
 
 
 static ngx_flag_t ngx_auth_httpsig_directory_is_host_char(u_char c);
+static ngx_flag_t ngx_auth_httpsig_directory_is_ipv6_char(u_char c);
 static void ngx_auth_httpsig_directory_trim(ngx_str_t *s);
 static ngx_flag_t ngx_auth_httpsig_directory_token_is(
     const ngx_str_t *token, const char *name);
@@ -81,7 +82,35 @@ ngx_auth_httpsig_directory_normalize_host(ngx_pool_t *pool,
         }
     }
 
-    for (i = 0; i < in->len; i++) {
+    i = 0;
+
+    if (p[0] == '[') {
+        i = 1;
+
+        while (i < in->len && p[i] != ']') {
+            if (!ngx_auth_httpsig_directory_is_ipv6_char(p[i])) {
+                if (reason != NULL) {
+                    *reason = NGX_AUTH_HTTPSIG_HOST_INVALID_CHAR;
+                }
+
+                return NGX_ERROR;
+            }
+
+            i++;
+        }
+
+        if (i >= in->len || i == 1) {
+            if (reason != NULL) {
+                *reason = NGX_AUTH_HTTPSIG_HOST_INVALID_CHAR;
+            }
+
+            return NGX_ERROR;
+        }
+
+        i++;
+    }
+
+    for (; i < in->len; i++) {
         if (!ngx_auth_httpsig_directory_is_host_char(p[i])) {
             if (reason != NULL) {
                 *reason = NGX_AUTH_HTTPSIG_HOST_INVALID_CHAR;
@@ -260,6 +289,16 @@ ngx_auth_httpsig_directory_is_host_char(u_char c)
            || (c >= 'A' && c <= 'Z')
            || (c >= '0' && c <= '9')
            || c == '.' || c == '-' || c == ':';
+}
+
+
+static ngx_flag_t
+ngx_auth_httpsig_directory_is_ipv6_char(u_char c)
+{
+    return (c >= '0' && c <= '9')
+           || (c >= 'a' && c <= 'f')
+           || (c >= 'A' && c <= 'F')
+           || c == ':';
 }
 
 
