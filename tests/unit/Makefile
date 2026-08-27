@@ -27,6 +27,7 @@ SRCS = test_main.c \
        ../../src/ngx_auth_httpsig_profile.c \
        ../../src/ngx_auth_httpsig_directory.c \
        ../../src/ngx_auth_httpsig_cache.c \
+       ../../src/ngx_auth_httpsig_keys_cache.c \
        ../../nxe-json/src/nxe_json.c \
        ../../nxe-jwx/src/nxe_jwx_jwks.c \
        ../../nxe-jwx/src/nxe_jwx_jws.c \
@@ -49,6 +50,7 @@ HDRS = test.h \
        ../../src/ngx_auth_httpsig_profile.h \
        ../../src/ngx_auth_httpsig_directory.h \
        ../../src/ngx_auth_httpsig_cache.h \
+       ../../src/ngx_auth_httpsig_keys_cache.h \
        ../../nxe-json/src/nxe_json.h \
        ../../nxe-jwx/src/nxe_jwx.h \
        ../../nxe-jwx/src/nxe_jwx_jwks.h \

@@ -43,6 +43,7 @@ ngx_module_srcs="\
   $ngx_addon_dir/src/ngx_auth_httpsig_base.c \
   $ngx_addon_dir/src/ngx_auth_httpsig_verify.c \
   $ngx_addon_dir/src/ngx_auth_httpsig_keys.c \
+  $ngx_addon_dir/src/ngx_auth_httpsig_keys_cache.c \
   $ngx_addon_dir/src/ngx_auth_httpsig_profile.c \
   $ngx_addon_dir/src/ngx_auth_httpsig_directory.c \
   $ngx_addon_dir/src/ngx_auth_httpsig_cache.c \
