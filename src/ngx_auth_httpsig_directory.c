@@ -523,5 +523,17 @@ ngx_auth_httpsig_directory_parse_directive(const ngx_str_t *token,
         return NGX_DECLINED;
     }
 
+    pos += consumed;
+
+    while (pos < token->len
+           && (token->data[pos] == ' ' || token->data[pos] == '\t'))
+    {
+        pos++;
+    }
+
+    if (pos != token->len) {
+        return NGX_DECLINED;
+    }
+
     return NGX_OK;
 }
