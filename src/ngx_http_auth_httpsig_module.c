@@ -149,6 +149,11 @@ static ngx_int_t ngx_http_auth_httpsig_variable_error(
 
 static ngx_int_t ngx_http_auth_httpsig_directory_handler(
     ngx_http_request_t *r);
+static ngx_int_t ngx_http_auth_httpsig_directory_fail_open(
+    ngx_http_auth_httpsig_ctx_t *ctx, ngx_auth_httpsig_fetch_reason_t reason);
+static ngx_int_t ngx_http_auth_httpsig_directory_fail_open_release(
+    ngx_http_auth_httpsig_ctx_t *ctx, ngx_auth_httpsig_cache_ctx_t *cache,
+    time_t retry_ttl, ngx_auth_httpsig_fetch_reason_t reason);
 static ngx_int_t ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr,
     void *data, ngx_int_t rc);
 static void ngx_http_auth_httpsig_directory_cleanup(void *data);
@@ -1141,6 +1146,45 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
 
 
 /*
+ * Fail-open helpers for ngx_http_auth_httpsig_directory_handler(): every
+ * path that cannot complete the key-directory fetch marks
+ * ctx->keys_unavailable (so ngx_http_auth_httpsig_evaluate() later reports
+ * KEY_UNAVAILABLE instead of aborting the request) and ctx->directory_done
+ * (so the phase engine does not re-enter this handler), then declines.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_directory_fail_open(ngx_http_auth_httpsig_ctx_t *ctx,
+    ngx_auth_httpsig_fetch_reason_t reason)
+{
+    ctx->keys_unavailable = 1;
+    ctx->directory_reason = reason;
+    ctx->directory_done = 1;
+
+    return NGX_DECLINED;
+}
+
+
+/*
+ * Same as above, but for the paths that already hold the SHM fetch right
+ * (ctx->claimed) and must release it first. ctx->claimed is cleared
+ * before cache_release() runs so that
+ * ngx_http_auth_httpsig_directory_cleanup(), which checks claimed to
+ * avoid a double release, does not also release this host.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_directory_fail_open_release(
+    ngx_http_auth_httpsig_ctx_t *ctx, ngx_auth_httpsig_cache_ctx_t *cache,
+    time_t retry_ttl, ngx_auth_httpsig_fetch_reason_t reason)
+{
+    ctx->claimed = 0;
+    ngx_auth_httpsig_cache_release(cache, &ctx->directory_host,
+                                   ngx_time() + retry_ttl);
+
+    return ngx_http_auth_httpsig_directory_fail_open(ctx, reason);
+}
+
+
+/*
  * Lazily evaluates the request against the configured profile, at most
  * once per request: the ctx is allocated and done=1 is set before any
  * other work, so re-entrancy (this being called again while it is
@@ -1254,10 +1298,8 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         || !ngx_auth_httpsig_directory_allowed(lcf->directory.trusted_agents,
                                                &host))
     {
-        ctx->keys_unavailable = 1;
-        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED;
-        ctx->directory_done = 1;
-        return NGX_DECLINED;
+        return ngx_http_auth_httpsig_directory_fail_open(ctx,
+                                                         NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED);
     }
 
     ctx->directory_host = host;
@@ -1270,10 +1312,8 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
                                       &ctx->directory_generation)
         != NGX_OK)
     {
-        ctx->keys_unavailable = 1;
-        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
-        ctx->directory_done = 1;
-        return NGX_DECLINED;
+        return ngx_http_auth_httpsig_directory_fail_open(ctx,
+                                                         NGX_AUTH_HTTPSIG_FETCH_FAILED);
     }
 
     switch (status) {
@@ -1288,22 +1328,16 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
 
     case NGX_AUTH_HTTPSIG_CACHE_BUSY:
-        ctx->keys_unavailable = 1;
-        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_BUSY;
-        ctx->directory_done = 1;
-        return NGX_DECLINED;
+        return ngx_http_auth_httpsig_directory_fail_open(ctx,
+                                                         NGX_AUTH_HTTPSIG_FETCH_BUSY);
 
     case NGX_AUTH_HTTPSIG_CACHE_NEGATIVE:
-        ctx->keys_unavailable = 1;
-        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE;
-        ctx->directory_done = 1;
-        return NGX_DECLINED;
+        return ngx_http_auth_httpsig_directory_fail_open(ctx,
+                                                         NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE);
 
     case NGX_AUTH_HTTPSIG_CACHE_UNAVAILABLE:
-        ctx->keys_unavailable = 1;
-        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE;
-        ctx->directory_done = 1;
-        return NGX_DECLINED;
+        return ngx_http_auth_httpsig_directory_fail_open(ctx,
+                                                         NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE);
 
     default: /* NGX_AUTH_HTTPSIG_CACHE_CLAIMED */
         break;
@@ -1320,12 +1354,9 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
     cln = ngx_pool_cleanup_add(r->pool,
                                sizeof(ngx_http_auth_httpsig_directory_cleanup_t));
     if (cln == NULL) {
-        ctx->claimed = 0;
-        ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
-        ctx->keys_unavailable = 1;
-        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
-        ctx->directory_done = 1;
-        return NGX_DECLINED;
+        return ngx_http_auth_httpsig_directory_fail_open_release(ctx, cache,
+                                                                 retry_ttl,
+                                                                 NGX_AUTH_HTTPSIG_FETCH_FAILED);
     }
 
     cln->handler = ngx_http_auth_httpsig_directory_cleanup;
@@ -1337,12 +1368,9 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
 
     ps = ngx_palloc(r->pool, sizeof(ngx_http_post_subrequest_t));
     if (ps == NULL) {
-        ctx->claimed = 0;
-        ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
-        ctx->keys_unavailable = 1;
-        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
-        ctx->directory_done = 1;
-        return NGX_DECLINED;
+        return ngx_http_auth_httpsig_directory_fail_open_release(ctx, cache,
+                                                                 retry_ttl,
+                                                                 NGX_AUTH_HTTPSIG_FETCH_FAILED);
     }
 
     ps->handler = ngx_http_auth_httpsig_directory_done;
@@ -1353,12 +1381,9 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
                             | NGX_HTTP_SUBREQUEST_WAITED)
         != NGX_OK)
     {
-        ctx->claimed = 0;
-        ngx_auth_httpsig_cache_release(cache, &host, ngx_time() + retry_ttl);
-        ctx->keys_unavailable = 1;
-        ctx->directory_reason = NGX_AUTH_HTTPSIG_FETCH_FAILED;
-        ctx->directory_done = 1;
-        return NGX_DECLINED;
+        return ngx_http_auth_httpsig_directory_fail_open_release(ctx, cache,
+                                                                 retry_ttl,
+                                                                 NGX_AUTH_HTTPSIG_FETCH_FAILED);
     }
 
     /* From here on the subrequest is posted and its post_subrequest
