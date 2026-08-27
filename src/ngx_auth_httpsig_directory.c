@@ -13,6 +13,7 @@
 #include <ngx_core.h>
 
 #include "ngx_auth_httpsig_directory.h"
+#include "ngx_auth_httpsig_str.h"
 
 
 /* Leaves three orders of magnitude of headroom below the largest
@@ -123,9 +124,7 @@ ngx_auth_httpsig_directory_allowed(const ngx_array_t *allow,
     entries = allow->elts;
 
     for (i = 0; i < allow->nelts; i++) {
-        if (entries[i].len == host->len
-            && ngx_memcmp(entries[i].data, host->data, host->len) == 0)
-        {
+        if (ngx_auth_httpsig_str_eq(&entries[i], host)) {
             return 1;
         }
     }

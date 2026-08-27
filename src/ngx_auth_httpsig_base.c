@@ -13,6 +13,7 @@
 #include <ngx_core.h>
 
 #include "ngx_auth_httpsig_base.h"
+#include "ngx_auth_httpsig_str.h"
 
 
 typedef struct {
@@ -689,9 +690,7 @@ ngx_auth_httpsig_base_field_value(ngx_pool_t *pool,
     len = 0;
 
     for (i = 0; i < n; i++) {
-        if (headers[i].name.len == name->len
-            && ngx_memcmp(headers[i].name.data, name->data, name->len) == 0)
-        {
+        if (ngx_auth_httpsig_str_eq(&headers[i].name, name)) {
             if (count > 0) {
                 len += 2;   /* ", " */
             }
@@ -714,9 +713,7 @@ ngx_auth_httpsig_base_field_value(ngx_pool_t *pool,
     count = 0;
 
     for (i = 0; i < n; i++) {
-        if (headers[i].name.len == name->len
-            && ngx_memcmp(headers[i].name.data, name->data, name->len) == 0)
-        {
+        if (ngx_auth_httpsig_str_eq(&headers[i].name, name)) {
             if (count > 0) {
                 *p++ = ',';
                 *p++ = ' ';
@@ -776,9 +773,7 @@ ngx_auth_httpsig_base_build(ngx_pool_t *pool,
         }
 
         for (j = 0; j < i; j++) {
-            if (label.len == labels[j].len
-                && ngx_memcmp(label.data, labels[j].data, label.len) == 0)
-            {
+            if (ngx_auth_httpsig_str_eq(&label, &labels[j])) {
                 *reason = NGX_AUTH_HTTPSIG_BASE_DUPLICATE_COMPONENT;
                 return NGX_DECLINED;
             }

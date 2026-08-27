@@ -12,6 +12,7 @@
 #include <ngx_core.h>
 
 #include "ngx_auth_httpsig_profile.h"
+#include "ngx_auth_httpsig_str.h"
 
 
 static const ngx_auth_httpsig_profile_t ngx_auth_httpsig_profiles[] = {
@@ -81,11 +82,7 @@ ngx_auth_httpsig_profile_get(const ngx_str_t *name)
          / sizeof(ngx_auth_httpsig_profiles[0]);
          i++)
     {
-        if (ngx_auth_httpsig_profiles[i].name.len == name->len
-            && ngx_memcmp(ngx_auth_httpsig_profiles[i].name.data, name->data,
-                          name->len)
-            == 0)
-        {
+        if (ngx_auth_httpsig_str_eq(&ngx_auth_httpsig_profiles[i].name, name)) {
             return &ngx_auth_httpsig_profiles[i];
         }
     }
@@ -355,8 +352,7 @@ ngx_auth_httpsig_profile_select(const ngx_auth_httpsig_sfv_dictionary_t *dict,
         found = ngx_auth_httpsig_sfv_param_get(params, "tag");
 
         if (found != NULL && found->type == NGX_AUTH_HTTPSIG_SFV_STRING
-            && found->value.len == tag->len
-            && ngx_memcmp(found->value.data, tag->data, tag->len) == 0)
+            && ngx_auth_httpsig_str_eq(&found->value, tag))
         {
             return &entry[i];
         }
@@ -456,12 +452,9 @@ ngx_auth_httpsig_profile_covered_components(const ngx_array_t *items)
              / sizeof(ngx_auth_httpsig_profile_components[0]);
              j++)
         {
-            if (item[i].bare.value.len
-                == ngx_auth_httpsig_profile_components[j].name.len
-                && ngx_memcmp(item[i].bare.value.data,
-                              ngx_auth_httpsig_profile_components[j].name.data,
-                              item[i].bare.value.len)
-                == 0)
+            if (ngx_auth_httpsig_str_eq(&item[i].bare.value,
+                                        &ngx_auth_httpsig_profile_components[j].
+                                        name))
             {
                 covered |= ngx_auth_httpsig_profile_components[j].bit;
                 break;

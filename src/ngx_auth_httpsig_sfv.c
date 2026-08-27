@@ -8,6 +8,7 @@
 #include <ngx_core.h>
 
 #include "ngx_auth_httpsig_sfv.h"
+#include "ngx_auth_httpsig_str.h"
 
 
 typedef struct {
@@ -536,9 +537,7 @@ ngx_auth_httpsig_sfv_read_parameters(ngx_auth_httpsig_sfv_ctx_t *ctx,
         param = params->elts;
 
         for (i = 0; i < params->nelts; i++) {
-            if (param[i].key.len == key.len
-                && ngx_memcmp(param[i].key.data, key.data, key.len) == 0)
-            {
+            if (ngx_auth_httpsig_str_eq(&param[i].key, &key)) {
                 existing = &param[i];
                 break;
             }
@@ -702,9 +701,7 @@ ngx_auth_httpsig_sfv_read_dictionary(ngx_auth_httpsig_sfv_ctx_t *ctx,
         entry = entries->elts;
 
         for (i = 0; i < entries->nelts; i++) {
-            if (entry[i].key.len == key.len
-                && ngx_memcmp(entry[i].key.data, key.data, key.len) == 0)
-            {
+            if (ngx_auth_httpsig_str_eq(&entry[i].key, &key)) {
                 existing = &entry[i];
                 break;
             }
@@ -1368,9 +1365,7 @@ ngx_auth_httpsig_sfv_dict_get(const ngx_auth_httpsig_sfv_dictionary_t *dict,
     entry = dict->entries->elts;
 
     for (i = 0; i < dict->entries->nelts; i++) {
-        if (entry[i].key.len == key->len
-            && ngx_memcmp(entry[i].key.data, key->data, key->len) == 0)
-        {
+        if (ngx_auth_httpsig_str_eq(&entry[i].key, key)) {
             return &entry[i].value;
         }
     }
