@@ -508,6 +508,16 @@ ngx_auth_httpsig_profile_agent_bounds(ngx_pool_t *pool,
     ngx_str_t url;
     u_char *start, *end_of_authority, *end, *p, *host_begin, *host_stop;
 
+    /*
+     * The raw-value fallback below bypasses SFV parsing, so it would
+     * otherwise skip the length limit that ngx_auth_httpsig_sfv_parse_item()
+     * enforces internally. Apply the same limit here up front so both
+     * paths are bounded identically.
+     */
+    if (raw->len > NGX_AUTH_HTTPSIG_MAX_SFV_LENGTH) {
+        return NGX_DECLINED;
+    }
+
     if (ngx_auth_httpsig_sfv_parse_item(pool, raw, &item, NULL) == NGX_OK
         && item->bare.type == NGX_AUTH_HTTPSIG_SFV_STRING)
     {
