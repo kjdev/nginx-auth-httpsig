@@ -30,7 +30,7 @@ my $req = default_request(
 );
 
 my ($input, $sig) = sign(
-    keyfile    => 'tests/prove/data/ed25519-key.pem',
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
     components => ['@target-uri', '@authority', 'signature-agent'],
     params     => [
         ['created', time(),       'integer'],
@@ -71,7 +71,7 @@ my $req = default_request(
 );
 
 my ($input, $sig) = sign(
-    keyfile    => 'tests/prove/data/ed25519-key2.pem',
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key2.pem",
     components => ['@target-uri', '@authority', 'signature-agent'],
     params     => [
         ['created', time(),       'integer'],
@@ -110,7 +110,7 @@ my $req = default_request(
 );
 
 my ($input, $sig) = sign(
-    keyfile    => 'tests/prove/data/ed25519-key.pem',
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
     components => ['@target-uri', '@authority', 'signature-agent'],
     params     => [
         ['created', time() - 200, 'integer'],
