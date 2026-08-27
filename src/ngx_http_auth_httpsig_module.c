@@ -1458,14 +1458,23 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     ngx_auth_httpsig_fetch_reason_t reason;
     ngx_auth_httpsig_keys_t *validated;
 
-    lcf = ngx_http_get_module_loc_conf(sr, ngx_http_auth_httpsig_module);
+    /* directory_handler() only ever posts this subrequest from r->main
+     * (it declines otherwise), so sr->parent is always that protected
+     * location's request -- use its loc_conf for every directive the
+     * operator sets on the protected location (max_size, media type,
+     * cache TTLs), matching the lcf directory_handler() already used to
+     * claim the SHM fetch right and compute retry_ttl. */
+    lcf = ngx_http_get_module_loc_conf(sr->parent,
+                                       ngx_http_auth_httpsig_module);
     mcf = ngx_http_get_module_main_conf(sr, ngx_http_auth_httpsig_module);
     cache = mcf->shm_zone->data;
 
-    /* sr's location is resolved by now (its own phase engine ran the
-     * find-config phase before this post_subrequest handler fires), so
-     * clcf reflects the fetch location's own directive, not the
-     * requesting location's. */
+    /* sr's own location is resolved by now (its own phase engine ran
+     * the find-config phase before this post_subrequest handler
+     * fires), so clcf reflects the fetch location's own directive
+     * (subrequest_output_buffer_size), which is what actually caps the
+     * response nginx hands to this module -- unlike lcf above, this one
+     * intentionally stays on sr, not sr->parent. */
     clcf = ngx_http_get_module_loc_conf(sr, ngx_http_core_module);
 
     if (clcf->subrequest_output_buffer_size < lcf->directory.max_size) {
