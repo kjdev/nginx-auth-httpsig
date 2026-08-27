@@ -19,6 +19,8 @@
 #include <string.h>
 #include <time.h>
 
+#define ngx_cdecl
+
 
 /* --- basic types --- */
 
@@ -48,6 +50,8 @@ typedef intptr_t ngx_msec_t;
 
 #define ngx_min(val1, val2)  ((val1 > val2) ? (val2) : (val1))
 #define ngx_max(val1, val2)  ((val1 < val2) ? (val2) : (val1))
+
+#include "ngx_rbtree.h"
 
 
 /* --- ngx_str_t --- */
@@ -189,6 +193,90 @@ ngx_int_t ngx_decode_base64url(ngx_str_t *dst, ngx_str_t *src);
 void ngx_encode_base64url(ngx_str_t *dst, ngx_str_t *src);
 ngx_int_t ngx_decode_base64(ngx_str_t *dst, ngx_str_t *src);
 void ngx_encode_base64(ngx_str_t *dst, ngx_str_t *src);
+
+
+/* --- ngx_shm_t / ngx_shm_zone_t --- */
+
+typedef struct {
+    u_char     *addr;
+    size_t      size;
+    ngx_str_t   name;
+    ngx_log_t  *log;
+    ngx_uint_t  exists;
+} ngx_shm_t;
+
+typedef struct ngx_shm_zone_s  ngx_shm_zone_t;
+typedef ngx_int_t (*ngx_shm_zone_init_pt) (ngx_shm_zone_t *zone, void *data);
+
+struct ngx_shm_zone_s {
+    void                  *data;
+    ngx_shm_t              shm;
+    ngx_shm_zone_init_pt   init;
+    void                  *tag;
+    void                  *sync;
+    ngx_uint_t             noreuse;
+};
+
+
+/* --- ngx_cycle_t (minimal) --- */
+
+typedef struct {
+    ngx_log_t  *log;
+} ngx_cycle_t;
+
+extern volatile ngx_cycle_t *ngx_cycle;
+
+
+/* --- ngx_shmtx_t (single-threaded no-op, counts lock/unlock calls) --- */
+
+typedef struct {
+    ngx_uint_t  locked;
+    ngx_uint_t  lock_calls;
+    ngx_uint_t  unlock_calls;
+} ngx_shmtx_t;
+
+void ngx_shmtx_lock(ngx_shmtx_t *mtx);
+void ngx_shmtx_unlock(ngx_shmtx_t *mtx);
+
+
+/* --- ngx_slab_pool_t (malloc-backed, byte-budget capped) --- */
+
+typedef struct ngx_stub_slab_block_s ngx_stub_slab_block_t;
+
+struct ngx_stub_slab_block_s {
+    ngx_stub_slab_block_t *next;
+    ngx_stub_slab_block_t *prev;
+    size_t                  size;
+};
+
+typedef struct {
+    ngx_shmtx_t             mutex;
+    void                   *data;
+    u_char                 *log_ctx;
+    unsigned                log_nomem:1;
+
+    size_t                  budget;
+    size_t                  used;
+    ngx_stub_slab_block_t  *blocks;
+} ngx_slab_pool_t;
+
+void *ngx_slab_alloc(ngx_slab_pool_t *pool, size_t size);
+void *ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size);
+void  ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p);
+
+ngx_slab_pool_t *ngx_stub_slab_create(size_t budget, ngx_log_t *log);
+void ngx_stub_slab_destroy(ngx_slab_pool_t *pool);
+
+
+/* --- ngx_crc32_short / ngx_memn2cmp --- */
+
+uint32_t ngx_crc32_short(u_char *p, size_t len);
+ngx_int_t ngx_memn2cmp(u_char *s1, u_char *s2, size_t n1, size_t n2);
+
+
+/* --- ngx_sprintf (minimal: "%V" and "%Z" only) --- */
+
+u_char *ngx_cdecl ngx_sprintf(u_char *buf, const char *fmt, ...);
 
 
 #endif /* NGX_STUB_H */

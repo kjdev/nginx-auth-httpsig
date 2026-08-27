@@ -107,6 +107,19 @@ our $HttpConfig = <<'_EOC_';
         }
     }
 
+    server {
+        listen  127.0.0.1:18450 ssl;
+        server_name  directory-smallbuf;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
     # /t below renders its body via proxy_pass + sub_filter (both content
     # filters, evaluated well after the PREACCESS phase). A `return` there
     # would compile into rewrite-phase script codes that run and finalize
@@ -150,6 +163,43 @@ our $MainConfig = <<'_EOC_';
         auth_httpsig_trusted_agent     off;
         resolver                       1.1.1.1;
         subrequest_output_buffer_size  128k;
+        proxy_ssl_verify                off;
+        proxy_ssl_server_name           on;
+        proxy_ssl_name                  $httpsig_directory_host;
+        proxy_set_header                Host $httpsig_directory_host;
+        proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
+    }
+_EOC_
+
+# Same as $MainConfig, but with an additional trusted host and a
+# subrequest_output_buffer_size below auth_httpsig_key_directory_max_size, to
+# exercise the runtime buffer-size mismatch warning.
+our $SmallBufferConfig = <<'_EOC_';
+    auth_httpsig_mode                   observe;
+    auth_httpsig_key_directory_request  /httpsig_fetch;
+    auth_httpsig_trusted_agent
+        127.0.0.1:18443
+        127.0.0.1:18444
+        127.0.0.1:18445
+        127.0.0.1:18446
+        127.0.0.1:18447
+        127.0.0.1:18448
+        127.0.0.1:18450;
+
+    location /t {
+        default_type       text/plain;
+        sub_filter_types    text/plain;
+        sub_filter          'RESPONSE_MARKER'  'verified:$httpsig_verified error:$httpsig_error';
+        sub_filter_once      on;
+        proxy_pass  http://127.0.0.1:18449/marker;
+    }
+
+    location = /httpsig_fetch {
+        internal;
+        auth_httpsig_mode              off;
+        auth_httpsig_trusted_agent     off;
+        resolver                       1.1.1.1;
+        subrequest_output_buffer_size  1k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
         proxy_ssl_name                  $httpsig_directory_host;
@@ -358,3 +408,19 @@ verified:1 error:
 --- grep_error_log eval: qr/18448 GET \/\.well-known\/http-message-signatures-directory\S*/
 --- grep_error_log_out
 18448 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 12: a subrequest_output_buffer_size below the key-directory max size logs a warning
+--- http_config eval: $::HttpConfig
+--- config eval: $::SmallBufferConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18450')
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- error_log
+auth_httpsig: "subrequest_output_buffer_size" (1024) in "/httpsig_fetch" is below "auth_httpsig_key_directory_max_size" (65536)

@@ -259,3 +259,74 @@ my ($input, $sig) = sign(
 GET /t
 --- response_body chomp
 verified=[0] error=[parse_error]
+
+
+
+=== TEST 8: a directory fetch rejected by the allowlist reports directory_not_allowed even when the keyid is also absent from the static JWKS
+--- http_config
+    auth_httpsig_jwks_file       $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile         web-bot-auth;
+    auth_httpsig_key_cache_zone  httpsig_keys:1m;
+
+    # $httpsig_* is only resolved once evaluate() runs; a plain "return" in
+    # /t below compiles into a rewrite-phase script that finalizes the
+    # request *before* the PREACCESS-phase directory fetch, so it would
+    # always observe the pre-fetch value. Routing through a proxied marker
+    # and a content-phase sub_filter defers the substitution until after
+    # PREACCESS has run (same technique as auth_httpsig_directory_fetch.t).
+    server {
+        listen  127.0.0.1:18460;
+        server_name  error-marker;
+
+        location = /marker {
+            default_type  text/plain;
+            return 200 'RESPONSE_MARKER';
+        }
+    }
+--- config
+    auth_httpsig_mode                   observe;
+    auth_httpsig_trusted_agent          bot.example.com;
+    auth_httpsig_key_directory_request  /httpsig_fetch;
+
+    location /t {
+        default_type        text/plain;
+        sub_filter_types     text/plain;
+        sub_filter           'RESPONSE_MARKER'  'verified:$httpsig_verified error:$httpsig_error';
+        sub_filter_once      on;
+        proxy_pass  http://127.0.0.1:18460/marker;
+    }
+
+    location = /httpsig_fetch {
+        internal;
+        auth_httpsig_mode           off;
+        auth_httpsig_trusted_agent  off;
+        resolver                    1.1.1.1;
+        proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
+    }
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://evil.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => 't/data/ed25519-key2.pem',
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://evil.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n"
+--- request
+GET /t
+--- response_body chomp
+verified: error:directory_not_allowed

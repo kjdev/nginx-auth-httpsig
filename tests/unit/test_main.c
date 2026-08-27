@@ -22,6 +22,7 @@ void test_suite_keys(ngx_log_t *log);
 void test_suite_verify(ngx_log_t *log);
 void test_suite_profile(ngx_log_t *log);
 void test_suite_directory(ngx_log_t *log);
+void test_suite_cache(ngx_log_t *log);
 
 
 int
@@ -38,6 +39,7 @@ main(void)
     test_suite_verify(&log);
     test_suite_profile(&log);
     test_suite_directory(&log);
+    test_suite_cache(&log);
 
     printf("%d passed, %d failed\n", test_passed, test_failed);
 

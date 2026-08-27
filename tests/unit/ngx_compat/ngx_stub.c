@@ -9,6 +9,7 @@
 
 #include "ngx_stub.h"
 
+#include <stdarg.h>
 #include <stdlib.h>
 
 
@@ -494,4 +495,244 @@ ngx_encode_base64(ngx_str_t *dst, ngx_str_t *src)
     }
 
     dst->len = (size_t) (d - dst->data);
+}
+
+
+/* --- ngx_cycle (minimal, log-only) --- */
+
+static ngx_log_t ngx_stub_default_log = { NGX_LOG_WARN };
+static ngx_cycle_t ngx_stub_default_cycle = { &ngx_stub_default_log };
+volatile ngx_cycle_t *ngx_cycle = &ngx_stub_default_cycle;
+
+
+/* --- ngx_shmtx_t (single-threaded no-op) --- */
+
+void
+ngx_shmtx_lock(ngx_shmtx_t *mtx)
+{
+    mtx->lock_calls++;
+    mtx->locked = 1;
+}
+
+
+void
+ngx_shmtx_unlock(ngx_shmtx_t *mtx)
+{
+    mtx->unlock_calls++;
+    mtx->locked = 0;
+}
+
+
+/* --- ngx_slab_pool_t (malloc-backed, byte-budget capped) --- */
+
+static void *
+ngx_stub_slab_do_alloc(ngx_slab_pool_t *pool, size_t size)
+{
+    ngx_stub_slab_block_t *block;
+
+    if (pool == NULL) {
+        return NULL;
+    }
+
+    if (pool->used + size > pool->budget) {
+        return NULL;
+    }
+
+    block = malloc(sizeof(ngx_stub_slab_block_t) + size);
+    if (block == NULL) {
+        return NULL;
+    }
+
+    block->size = size;
+    block->prev = NULL;
+    block->next = pool->blocks;
+
+    if (pool->blocks != NULL) {
+        pool->blocks->prev = block;
+    }
+
+    pool->blocks = block;
+    pool->used += size;
+
+    return (void *) (block + 1);
+}
+
+
+void *
+ngx_slab_alloc(ngx_slab_pool_t *pool, size_t size)
+{
+    return ngx_stub_slab_do_alloc(pool, size);
+}
+
+
+void *
+ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
+{
+    return ngx_stub_slab_do_alloc(pool, size);
+}
+
+
+void
+ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
+{
+    ngx_stub_slab_block_t *block;
+
+    if (pool == NULL || p == NULL) {
+        return;
+    }
+
+    block = ((ngx_stub_slab_block_t *) p) - 1;
+
+    if (block->prev != NULL) {
+        block->prev->next = block->next;
+    } else {
+        pool->blocks = block->next;
+    }
+
+    if (block->next != NULL) {
+        block->next->prev = block->prev;
+    }
+
+    pool->used -= block->size;
+
+    free(block);
+}
+
+
+ngx_slab_pool_t *
+ngx_stub_slab_create(size_t budget, ngx_log_t *log)
+{
+    ngx_slab_pool_t *pool;
+
+    (void) log;
+
+    pool = malloc(sizeof(ngx_slab_pool_t));
+    if (pool == NULL) {
+        return NULL;
+    }
+
+    ngx_memzero(pool, sizeof(ngx_slab_pool_t));
+    pool->budget = budget;
+
+    return pool;
+}
+
+
+/*
+ * Frees every allocation still tracked in the slab's block list, which
+ * covers cache nodes, jwks payloads and the log_ctx string alike -- all
+ * of them went through ngx_slab_alloc(_locked), so a single walk is
+ * enough to leave ASAN with nothing outstanding.
+ */
+void
+ngx_stub_slab_destroy(ngx_slab_pool_t *pool)
+{
+    ngx_stub_slab_block_t *block, *next;
+
+    if (pool == NULL) {
+        return;
+    }
+
+    for (block = pool->blocks; block != NULL; block = next) {
+        next = block->next;
+        free(block);
+    }
+
+    free(pool);
+}
+
+
+/* --- ngx_crc32_short --- */
+
+static uint32_t ngx_stub_crc32_table16[] = {
+    0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
+    0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
+    0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
+    0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c
+};
+
+
+uint32_t
+ngx_crc32_short(u_char *p, size_t len)
+{
+    u_char c;
+    uint32_t crc;
+
+    crc = 0xffffffff;
+
+    while (len--) {
+        c = *p++;
+        crc = ngx_stub_crc32_table16[(crc ^ (c & 0xf)) & 0xf] ^ (crc >> 4);
+        crc = ngx_stub_crc32_table16[(crc ^ (c >> 4)) & 0xf] ^ (crc >> 4);
+    }
+
+    return crc ^ 0xffffffff;
+}
+
+
+/* --- ngx_memn2cmp --- */
+
+ngx_int_t
+ngx_memn2cmp(u_char *s1, u_char *s2, size_t n1, size_t n2)
+{
+    size_t n;
+    ngx_int_t m, z;
+
+    if (n1 <= n2) {
+        n = n1;
+        z = -1;
+
+    } else {
+        n = n2;
+        z = 1;
+    }
+
+    m = ngx_memcmp(s1, s2, n);
+
+    if (m || n1 == n2) {
+        return m;
+    }
+
+    return z;
+}
+
+
+/* --- ngx_sprintf (minimal: "%V" and "%Z" only) --- */
+
+u_char *ngx_cdecl
+ngx_sprintf(u_char *buf, const char *fmt, ...)
+{
+    va_list args;
+    const char *p;
+    ngx_str_t *value;
+
+    va_start(args, fmt);
+
+    for (p = fmt; *p != '\0'; p++) {
+        if (*p != '%') {
+            *buf++ = (u_char) *p;
+            continue;
+        }
+
+        p++;
+
+        switch (*p) {
+        case 'V':
+            value = va_arg(args, ngx_str_t *);
+            buf = ngx_cpymem(buf, value->data, value->len);
+            break;
+
+        case 'Z':
+            *buf++ = '\0';
+            break;
+
+        default:
+            *buf++ = (u_char) *p;
+            break;
+        }
+    }
+
+    va_end(args);
+
+    return buf;
 }

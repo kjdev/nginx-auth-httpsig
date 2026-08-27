@@ -26,12 +26,15 @@ __DATA__
 
     location = /httpsig_fetch {
         internal;
-        auth_httpsig_mode           off;
-        auth_httpsig_trusted_agent  off;
-        resolver                    1.1.1.1;
-        proxy_ssl_server_name       on;
-        proxy_ssl_name              $httpsig_directory_host;
-        proxy_set_header            Host $httpsig_directory_host;
+        auth_httpsig_mode              off;
+        auth_httpsig_trusted_agent     off;
+        resolver                       1.1.1.1;
+        subrequest_output_buffer_size  128k;
+        proxy_ssl_verify                on;
+        proxy_ssl_trusted_certificate   $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        proxy_ssl_server_name           on;
+        proxy_ssl_name                  $httpsig_directory_host;
+        proxy_set_header                Host $httpsig_directory_host;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
 --- request
