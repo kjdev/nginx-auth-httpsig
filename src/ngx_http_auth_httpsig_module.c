@@ -1496,7 +1496,7 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
             for (h = sr->upstream->headers_in.cache_control; h != NULL;
                  h = h->next)
             {
-                len += h->value.len + 2;
+                len += h->value.len + (h->next != NULL ? 2 : 0);
             }
 
             p = ngx_pnalloc(sr->parent->pool, len);
