@@ -613,7 +613,6 @@ ngx_auth_httpsig_profile_agent_copy(ngx_pool_t *pool, u_char *start,
     u_char *end, ngx_str_t *out)
 {
     ngx_str_t value;
-    ngx_uint_t i;
 
     value.len = (size_t) (end - start);
 
@@ -622,9 +621,7 @@ ngx_auth_httpsig_profile_agent_copy(ngx_pool_t *pool, u_char *start,
         return;
     }
 
-    for (i = 0; i < value.len; i++) {
-        value.data[i] = ngx_tolower(start[i]);
-    }
+    ngx_strlow(value.data, start, value.len);
 
     *out = value;
 }
