@@ -3,6 +3,7 @@ use warnings;
 
 use FindBin;
 use lib "$FindBin::Bin/lib";
+use File::Temp qw(tempdir);
 
 # Cache-reuse/TTL assertions below depend on the SHM zone surviving across
 # blocks, which requires nginx to NOT restart between them. Test::Nginx
@@ -138,6 +139,43 @@ our $HttpConfig = <<'_EOC_';
     }
 _EOC_
 
+# Mutable key-directory fixture for the TTL-rotation test below: a plain
+# file (not a `return` literal) so it can be rewritten between requests
+# without changing the nginx config text -- changing the config would force
+# Test::Nginx to restart the worker and defeat the point of testing
+# worker-local generation invalidation within one running worker.
+#
+# The rewrite itself happens via a real PUT request (see the "directory
+# rotate" location below), not a Perl side effect inside a --- more_headers
+# or --- request eval block: Test::Base::blocks() runs every block's filters
+# (which is what evaluates "eval" sections) up front, in file order, before
+# run_tests() sends the first actual HTTP request for any block. A write
+# performed from inside an eval section would therefore land before earlier
+# blocks' requests go out, not between them.
+our $RotateDir  = tempdir(CLEANUP => 1);
+our $RotateFile = "$RotateDir/directory-rotate.json";
+
+open(my $rotate_fh, '>', $RotateFile) or die "open $RotateFile: $!";
+print $rotate_fh '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+close $rotate_fh;
+
+$HttpConfig .= <<"_EOC_";
+    server {
+        listen  127.0.0.1:18451 ssl;
+        server_name  directory-rotate;
+
+        ssl_certificate      \$TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  \$TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  \$TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            alias  $RotateFile;
+        }
+    }
+_EOC_
+
 our $MainConfig = <<'_EOC_';
     auth_httpsig_mode                   observe;
     auth_httpsig_key_directory_request  /httpsig_fetch;
@@ -147,7 +185,8 @@ our $MainConfig = <<'_EOC_';
         127.0.0.1:18445
         127.0.0.1:18446
         127.0.0.1:18447
-        127.0.0.1:18448;
+        127.0.0.1:18448
+        127.0.0.1:18451;
 
     location /t {
         default_type       text/plain;
@@ -168,6 +207,16 @@ our $MainConfig = <<'_EOC_';
         proxy_ssl_name                  $httpsig_directory_host;
         proxy_set_header                Host $httpsig_directory_host;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
+    }
+_EOC_
+
+# Rewrites the "directory-rotate" origin's fixture (see $RotateFile above)
+# via a real PUT request, so the rewrite happens exactly where it appears in
+# the test file's request order instead of racing Test::Base's eval parsing.
+$MainConfig .= <<"_EOC_";
+    location = /rotate {
+        dav_methods  PUT;
+        alias  $RotateFile;
     }
 _EOC_
 
@@ -209,8 +258,10 @@ our $SmallBufferConfig = <<'_EOC_';
 _EOC_
 
 sub sign_headers {
-    my ($agent_host, $target) = @_;
+    my ($agent_host, $target, $keyfile, $keyid) = @_;
     $target //= '/t';
+    $keyfile //= 't/data/ed25519-key.pem';
+    $keyid //= 'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA';
 
     my $req = HttpSig::default_request(
         target  => $target,
@@ -218,12 +269,12 @@ sub sign_headers {
     );
 
     my ($input, $sig) = HttpSig::sign(
-        keyfile    => 't/data/ed25519-key.pem',
+        keyfile    => $keyfile,
         components => ['@target-uri', '@authority', 'signature-agent'],
         params     => [
             ['created', time(),       'integer'],
             ['expires', time() + 300, 'integer'],
-            ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+            ['keyid',   $keyid, 'string'],
             ['tag',     'web-bot-auth', 'string'],
         ],
         req => $req,
@@ -234,8 +285,9 @@ sub sign_headers {
         . "Signature: $sig\n";
 }
 
-# Cache-TTL-reuse/refetch assertions depend on TEST 1/2/4/5/8/9/10/11 running
-# in file order; Test::Nginx shuffles block order by default.
+# Cache-TTL-reuse/refetch assertions depend on TEST
+# 1/2/4/5/8/9/10/11/13/14/15/16 running in file order; Test::Nginx shuffles
+# block order by default.
 no_shuffle();
 
 run_tests();
@@ -424,3 +476,68 @@ GET /t
 verified:1 error:
 --- error_log
 auth_httpsig: "subrequest_output_buffer_size" (1024) in "/httpsig_fetch" is below "auth_httpsig_key_directory_max_size" (65536)
+
+
+
+=== TEST 13: a fetch caches the current directory key
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18451')
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18451 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18451 GET /.well-known/http-message-signatures-directory
+--- wait: 2
+
+
+
+=== TEST 14: a PUT request rotates the mock origin's directory key on disk
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- request
+PUT /rotate
+{"keys":[{"kty":"OKP","crv":"Ed25519","x":"y1f98y7aXG3ZAtYj85_YVsQib4MHknBtmiERGjF5T-I","kid":"ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc"}]}
+--- error_code: 204
+
+
+
+=== TEST 15: a TTL-triggered refetch of the rotated key invalidates the old one
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18451')
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:0 error:unknown_keyid
+--- grep_error_log eval: qr/18451 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18451 GET /.well-known/http-message-signatures-directory
+18451 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 16: the rotated key verifies without a further refetch
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18451', '/t',
+    't/data/ed25519-key2.pem', 'ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc')
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18451 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18451 GET /.well-known/http-message-signatures-directory
+18451 GET /.well-known/http-message-signatures-directory
