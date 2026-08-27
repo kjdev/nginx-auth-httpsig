@@ -106,6 +106,12 @@ typedef struct {
 /*
  * Parsing entry points.
  *
+ * Buffer lifetime: every `ngx_str_t` produced for a key, Token, or String
+ * bare value points directly into `input` rather than a pool-allocated
+ * copy, so `input` must outlive `*out`. A Byte Sequence is the only bare
+ * type that is always pool-allocated, since it has to be base64-decoded
+ * into a new buffer regardless.
+ *
  * Return value:
  *   NGX_OK        `*out` holds the parsed value.
  *   NGX_DECLINED  the input is not well-formed Structured Fields, or

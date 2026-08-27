@@ -196,21 +196,17 @@ static ngx_int_t
 ngx_auth_httpsig_sfv_read_string(ngx_auth_httpsig_sfv_ctx_t *ctx,
     ngx_str_t *out)
 {
-    u_char *buf, *d;
-    u_char c;
+    const u_char *start, *p;
+    u_char       *buf, *d, c;
+    ngx_uint_t    escapes;
 
     if (ctx->pos >= ctx->last || *ctx->pos != '"') {
         return ngx_auth_httpsig_sfv_fail(ctx, "invalid string");
     }
 
     ctx->pos++;
-
-    buf = ngx_palloc(ctx->pool, (size_t) (ctx->last - ctx->pos));
-    if (buf == NULL) {
-        return NGX_ERROR;
-    }
-
-    d = buf;
+    start = ctx->pos;
+    escapes = 0;
 
     for ( ;; ) {
         if (ctx->pos >= ctx->last) {
@@ -220,7 +216,6 @@ ngx_auth_httpsig_sfv_read_string(ngx_auth_httpsig_sfv_ctx_t *ctx,
         c = *ctx->pos;
 
         if (c == '"') {
-            ctx->pos++;
             break;
         }
 
@@ -233,7 +228,8 @@ ngx_auth_httpsig_sfv_read_string(ngx_auth_httpsig_sfv_ctx_t *ctx,
                 return ngx_auth_httpsig_sfv_fail(ctx, "invalid string escape");
             }
 
-            *d++ = *ctx->pos++;
+            escapes++;
+            ctx->pos++;
             continue;
         }
 
@@ -241,9 +237,34 @@ ngx_auth_httpsig_sfv_read_string(ngx_auth_httpsig_sfv_ctx_t *ctx,
             return ngx_auth_httpsig_sfv_fail(ctx, "invalid string character");
         }
 
-        *d++ = c;
         ctx->pos++;
     }
+
+    if (escapes == 0) {
+        out->data = (u_char *) start;
+        out->len = (size_t) (ctx->pos - start);
+        ctx->pos++;
+
+        return NGX_OK;
+    }
+
+    buf = ngx_palloc(ctx->pool, (size_t) (ctx->pos - start) - escapes);
+    if (buf == NULL) {
+        return NGX_ERROR;
+    }
+
+    d = buf;
+    p = start;
+
+    while (p < ctx->pos) {
+        if (*p == '\\') {
+            p++;
+        }
+
+        *d++ = *p++;
+    }
+
+    ctx->pos++;
 
     out->data = buf;
     out->len = (size_t) (d - buf);
