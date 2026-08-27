@@ -1360,6 +1360,7 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     ngx_http_auth_httpsig_ctx_t *ctx = data;
     ngx_http_auth_httpsig_loc_conf_t *lcf;
     ngx_http_auth_httpsig_main_conf_t *mcf;
+    ngx_http_core_loc_conf_t *clcf;
     ngx_auth_httpsig_cache_ctx_t *cache;
     ngx_str_t schema, content_type, body, cache_control;
     ngx_table_elt_t *h;
@@ -1374,6 +1375,23 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     lcf = ngx_http_get_module_loc_conf(sr, ngx_http_auth_httpsig_module);
     mcf = ngx_http_get_module_main_conf(sr, ngx_http_auth_httpsig_module);
     cache = mcf->shm_zone->data;
+
+    /* sr's location is resolved by now (its own phase engine ran the
+     * find-config phase before this post_subrequest handler fires), so
+     * clcf reflects the fetch location's own directive, not the
+     * requesting location's. */
+    clcf = ngx_http_get_module_loc_conf(sr, ngx_http_core_module);
+
+    if (clcf->subrequest_output_buffer_size < lcf->directory.max_size) {
+        ngx_log_error(NGX_LOG_WARN, sr->connection->log, 0,
+                      "auth_httpsig: \"subrequest_output_buffer_size\" "
+                      "(%uz) in \"%V\" is below "
+                      "\"auth_httpsig_key_directory_max_size\" (%uz); "
+                      "nginx will reject a larger key-directory response "
+                      "before this module sees it",
+                      clcf->subrequest_output_buffer_size,
+                      &lcf->directory.request_uri, lcf->directory.max_size);
+    }
 
     accepted = 0;
     ngx_str_null(&body);
