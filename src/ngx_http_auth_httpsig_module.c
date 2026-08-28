@@ -1005,6 +1005,83 @@ ngx_http_auth_httpsig_find_header(ngx_list_t *list, const char *name,
 
 
 /*
+ * Collects every occurrence of header `name` in `list`, in receipt
+ * order, with leading/trailing OWS stripped -- but not folded into
+ * one field value, unlike ngx_auth_httpsig_base_field_value(). Used
+ * to resolve Signature-Input and Signature-Agent in the directory
+ * fetch handler, which needs the individual lines: the former to pick
+ * a profile-tagged label the same way
+ * ngx_auth_httpsig_profile_select_label() does, the latter because
+ * ADR 0022 requires walking Signature-Agent line by line rather than
+ * combining lines before parsing.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_collect_header(ngx_pool_t *pool, ngx_list_t *list,
+    const char *name, size_t len, ngx_array_t **out)
+{
+    ngx_list_part_t *part;
+    ngx_table_elt_t *header;
+    ngx_array_t *arr;
+    ngx_str_t *v, value;
+    ngx_uint_t i;
+
+    arr = ngx_array_create(pool, 1, sizeof(ngx_str_t));
+    if (arr == NULL) {
+        return NGX_ERROR;
+    }
+
+    part = &list->part;
+    header = part->elts;
+
+    for (i = 0; /* void */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+
+            part = part->next;
+            header = part->elts;
+            i = 0;
+        }
+
+        if (header[i].key.len != len
+            || ngx_strncasecmp(header[i].key.data, (u_char *) name, len)
+            != 0)
+        {
+            continue;
+        }
+
+        value = header[i].value;
+
+        while (value.len > 0
+               && (value.data[0] == ' ' || value.data[0] == '\t'))
+        {
+            value.data++;
+            value.len--;
+        }
+
+        while (value.len > 0
+               && (value.data[value.len - 1] == ' '
+                   || value.data[value.len - 1] == '\t'))
+        {
+            value.len--;
+        }
+
+        v = ngx_array_push(arr);
+        if (v == NULL) {
+            return NGX_ERROR;
+        }
+
+        *v = value;
+    }
+
+    *out = arr;
+
+    return NGX_OK;
+}
+
+
+/*
  * @scheme must come from the "scheme" variable, not r->schema directly:
  * a map-based rewrite of $scheme (the operator's trust-boundary decision
  * for TLS-terminating load balancers) would otherwise be bypassed.
@@ -1246,10 +1323,11 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
     ngx_pool_cleanup_t *cln;
     ngx_http_post_subrequest_t *ps;
     ngx_http_request_t *sr;
-    ngx_table_elt_t *sig_input, *sig_agent;
-    ngx_str_t agent_host, host, jwks;
+    ngx_array_t *sig_input, *sig_agent;
+    ngx_str_t agent_host, host, jwks, label;
     ngx_auth_httpsig_host_reason_t host_reason;
     ngx_auth_httpsig_cache_status_t status;
+    ngx_int_t rc;
     time_t retry_ttl;
 
     if (r != r->main) {
@@ -1295,16 +1373,22 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         ngx_http_set_ctx(r, ctx, ngx_http_auth_httpsig_module);
     }
 
-    sig_input = ngx_http_auth_httpsig_find_header(&r->headers_in.headers,
-                                                  "signature-input",
-                                                  sizeof("signature-input") -
-                                                  1);
-    sig_agent = ngx_http_auth_httpsig_find_header(&r->headers_in.headers,
-                                                  "signature-agent",
-                                                  sizeof("signature-agent") -
-                                                  1);
+    if (ngx_http_auth_httpsig_collect_header(r->pool, &r->headers_in.headers,
+                                             "signature-input",
+                                             sizeof("signature-input") - 1,
+                                             &sig_input)
+        != NGX_OK
+        || ngx_http_auth_httpsig_collect_header(r->pool,
+                                                &r->headers_in.headers,
+                                                "signature-agent",
+                                                sizeof("signature-agent") - 1,
+                                                &sig_agent)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
 
-    if (sig_input == NULL || sig_agent == NULL) {
+    if (sig_input->nelts == 0 || sig_agent->nelts == 0) {
         /* Signature-Agent alone must not trigger a fetch: an
          * unauthenticated client could otherwise use it to amplify
          * traffic toward an allow-listed host. */
@@ -1312,7 +1396,23 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    ngx_auth_httpsig_profile_agent_authority(r->pool, &sig_agent->value,
+    rc = ngx_auth_httpsig_profile_select_label(r->pool, lcf->profile.def,
+                                               sig_input, &label);
+    if (rc == NGX_ERROR) {
+        return NGX_ERROR;
+    }
+
+    if (rc == NGX_DECLINED) {
+        /* No Signature-Input label tagged for this profile: the fetch
+         * would only ever serve a signature this installation does
+         * not verify (ADR 0013's "fetch only for what we verify"),
+         * and ngx_auth_httpsig_profile_verify() will independently
+         * reach the same NOT_SIGNED outcome later. */
+        ctx->directory_done = 1;
+        return NGX_DECLINED;
+    }
+
+    ngx_auth_httpsig_profile_agent_authority(r->pool, sig_agent, &label,
                                              &agent_host);
 
     if (agent_host.len == 0

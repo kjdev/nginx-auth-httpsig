@@ -146,24 +146,62 @@ ngx_int_t ngx_auth_httpsig_profile_match(
     ngx_auth_httpsig_result_t *result);
 
 /*
- * Extracts the lowercased host (no port) of a raw Signature-Agent
- * field value, leaving `out` empty unless the value is an https URL.
- * Exposed so $httpsig_agent can be derived from an as-yet-unverified
- * Signature-Agent value, before signature verification has run.
+ * Selects the Signature-Input label tagged for `profile`, checking it
+ * against the profile's required parameters and covered components
+ * (via ngx_auth_httpsig_profile_match()) but not time window or
+ * signature: an Inner List that would fail
+ * ngx_auth_httpsig_profile_verify() on those grounds is rejected here
+ * too, so it never triggers a directory fetch. `signature_input` is
+ * the field's header lines, in receipt order,
+ * unjoined (as ngx_auth_httpsig_profile_agent_host() /
+ * ngx_auth_httpsig_profile_agent_authority() take theirs) -- this
+ * function joins them itself with ", " since, unlike Signature-Agent,
+ * Signature-Input labels are unique dictionary keys and folding is
+ * safe and required to see entries split across lines.
+ *
+ * Exposed so the key-directory fetch path (PREACCESS) can resolve
+ * which Signature-Agent entry to trust using the same tag-matched
+ * label that verification will later select, rather than guessing
+ * independently.
+ *
+ * Return value:
+ *   NGX_OK        `*label` holds the selected label.
+ *   NGX_DECLINED  no line, no entry tagged for `profile`, the field
+ *                 does not parse as a well-formed dictionary, or the
+ *                 entry fails ngx_auth_httpsig_profile_match().
+ *   NGX_ERROR     a required argument is NULL, or pool allocation
+ *                 failed.
+ */
+ngx_int_t ngx_auth_httpsig_profile_select_label(ngx_pool_t *pool,
+    const ngx_auth_httpsig_profile_t *profile,
+    const ngx_array_t *signature_input, ngx_str_t *label);
+
+/*
+ * Extracts the lowercased host (no port) of a Signature-Agent field,
+ * leaving `out` empty unless a usable https URL is found. `raws` are
+ * the field's header lines, in receipt order, unjoined (ADR 0022):
+ * each line is tried as a Dictionary, then a bare sf-string Item,
+ * then raw bytes. `label` (may be NULL / empty) is the Signature-Input
+ * label the caller is about to verify against; a Dictionary entry
+ * keyed the same is preferred over the first usable entry, across all
+ * lines (ADR 0023). Exposed so $httpsig_agent can be derived from an
+ * as-yet-unverified Signature-Agent value, before signature
+ * verification has run.
  */
 void ngx_auth_httpsig_profile_agent_host(ngx_pool_t *pool,
-    const ngx_str_t *raw, ngx_str_t *out);
+    const ngx_array_t *raws, const ngx_str_t *label, ngx_str_t *out);
 
 /*
  * Extracts the lowercased authority (host, plus ":<port>" if present)
- * of a raw Signature-Agent field value, leaving `out` empty unless the
- * value is an https URL. Exposed so the key-directory fetch path can
- * match it against "auth_httpsig_trusted_agent" entries and dial it
+ * of a Signature-Agent field, leaving `out` empty unless a usable
+ * https URL is found. See ngx_auth_httpsig_profile_agent_host() for
+ * `raws` / `label`. Exposed so the key-directory fetch path can match
+ * it against "auth_httpsig_trusted_agent" entries and dial it
  * directly, both of which need the exact authority, not just the
  * hostname.
  */
 void ngx_auth_httpsig_profile_agent_authority(ngx_pool_t *pool,
-    const ngx_str_t *raw, ngx_str_t *out);
+    const ngx_array_t *raws, const ngx_str_t *label, ngx_str_t *out);
 
 
 #endif /* NGX_AUTH_HTTPSIG_PROFILE_H */
