@@ -214,6 +214,151 @@ $HttpConfig .= <<'_EOC_';
     }
 _EOC_
 
+# Mock origins for the Signature-Agent Dictionary-format scenarios below.
+# Each returns the same valid, small JWKS body used by
+# directory-ok; what varies between scenarios is which of these get a
+# Signature-Agent Dictionary entry pointing at them, and whether that entry
+# is the one a verifier should actually pick. Ports that a scenario expects
+# to NOT be fetched are still declared here (and trusted-agent-listed below)
+# so that a wrong-entry-selection bug would show up as a spurious fetch log
+# line instead of being masked behind an unrelated allowlist rejection.
+$HttpConfig .= <<'_EOC_';
+    server {
+        listen  127.0.0.1:18454 ssl;
+        server_name  directory-dictmatch;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18455 ssl;
+        server_name  directory-dictfallback;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18456 ssl;
+        server_name  directory-multiline-match;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18457 ssl;
+        server_name  directory-multiline-other;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18458 ssl;
+        server_name  directory-typeskip-unusable;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18459 ssl;
+        server_name  directory-typeskip-usable;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18460 ssl;
+        server_name  directory-diffkey-unusable;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18461 ssl;
+        server_name  directory-diffkey-fallback;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+
+    server {
+        listen  127.0.0.1:18462 ssl;
+        server_name  directory-tagmismatch;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+        }
+    }
+_EOC_
+
 our $MainConfig = <<'_EOC_';
     auth_httpsig_mode                   observe;
     auth_httpsig_key_directory_request  /httpsig_fetch;
@@ -224,7 +369,16 @@ our $MainConfig = <<'_EOC_';
         127.0.0.1:18446
         127.0.0.1:18447
         127.0.0.1:18448
-        127.0.0.1:18451;
+        127.0.0.1:18451
+        127.0.0.1:18454
+        127.0.0.1:18455
+        127.0.0.1:18456
+        127.0.0.1:18457
+        127.0.0.1:18458
+        127.0.0.1:18459
+        127.0.0.1:18460
+        127.0.0.1:18461
+        127.0.0.1:18462;
 
     location /t {
         default_type       text/plain;
@@ -343,30 +497,42 @@ our $LocScopeConfig = <<'_EOC_';
     }
 _EOC_
 
+# $agent is either a bare host (legacy behavior: one line, quoted
+# sf-string form, e.g. "127.0.0.1:18443") or an arrayref of raw
+# Signature-Agent field values, one per header line, e.g.
+# ['sig1="https://127.0.0.1:18443"', 'other="https://127.0.0.1:18448"']
+# -- the Dictionary form real crawler traffic uses.
 sub sign_headers {
-    my ($agent_host, $target, $keyfile, $keyid) = @_;
+    my ($agent, $target, $keyfile, $keyid, $label, $tag) = @_;
     $target //= '/t';
     $keyfile //= 'tests/prove/data/ed25519-key.pem';
     $keyid //= 'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA';
+    $label //= 'sig1';
+    $tag //= 'web-bot-auth';
+
+    my @agent_lines = ref($agent) eq 'ARRAY' ? @$agent : (qq{"https://$agent"});
 
     my $req = HttpSig::default_request(
         target  => $target,
-        headers => [['Signature-Agent', qq{"https://$agent_host"}]],
+        headers => [map { ['Signature-Agent', $_] } @agent_lines],
     );
 
     my ($input, $sig) = HttpSig::sign(
+        label      => $label,
         keyfile    => $keyfile,
         components => ['@target-uri', '@authority', 'signature-agent'],
         params     => [
             ['created', time(),       'integer'],
             ['expires', time() + 300, 'integer'],
             ['keyid',   $keyid, 'string'],
-            ['tag',     'web-bot-auth', 'string'],
+            ['tag',     $tag, 'string'],
         ],
         req => $req,
     );
 
-    return qq{Signature-Agent: "https://$agent_host"\n}
+    my $agent_headers = join('', map { "Signature-Agent: $_\n" } @agent_lines);
+
+    return $agent_headers
         . "Signature-Input: $input\n"
         . "Signature: $sig\n";
 }
@@ -676,3 +842,118 @@ verified:1 error:
 --- grep_error_log eval: qr/18453 GET \/\.well-known\/http-message-signatures-directory\S*/
 --- grep_error_log_out
 18453 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 20: a Signature-Agent Dictionary entry keyed like the verified label is fetched (real crawler traffic shape)
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers(['sig1="https://127.0.0.1:18454"'])
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18454 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18454 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 21: a Signature-Agent Dictionary with no entry keyed like the verified label falls back to the first usable entry
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers(['g="https://127.0.0.1:18455"'])
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18455 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18455 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 22: only the labeled entry's host is fetched out of two Signature-Agent header lines naming different hosts
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers(['other="https://127.0.0.1:18457"', 'sig1="https://127.0.0.1:18456"'])
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/(?:18456|18457) GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18456 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 23: the same key repeated across lines with different "type" resolves to the line where "type" is absent
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers(['sig1="https://127.0.0.1:18458";type=jwks_uri', 'sig1="https://127.0.0.1:18459"'])
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/(?:18458|18459) GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18459 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 24: a labeled entry with an unsupported "type" is skipped in favor of a different key with no "type"
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers(['sig1="https://127.0.0.1:18460";type=jwks_uri, other="https://127.0.0.1:18461"'])
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/(?:18460|18461) GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18461 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 25: a Signature-Agent Dictionary whose only entry has an unsupported "type" is treated as having no usable entry
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers(['sig1="https://127.0.0.1:19999";type=cimd'])
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified: error:directory_not_allowed
+
+
+
+=== TEST 26: a tag-mismatched signature never triggers a fetch, even with an otherwise-allowlisted Signature-Agent host
+--- http_config eval: $::HttpConfig
+--- config eval: $::MainConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18462', '/t', undef, undef, undef, 'not-web-bot-auth')
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified: error:
+--- grep_error_log eval: qr/18462 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out

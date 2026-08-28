@@ -52,6 +52,46 @@ verified=[1] keyid=[PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA] agent=[bot.exam
 
 
 
+=== TEST 3: a Dictionary-form Signature-Agent (real crawler traffic shape) verifies and exposes agent
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+--- config
+    location /t {
+        auth_httpsig_mode observe;
+        return 200 "verified=[$httpsig_verified] keyid=[$httpsig_keyid] agent=[$httpsig_agent]";
+    }
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', 'sig1="https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    label      => 'sig1',
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['alg',     'ed25519',    'string'],
+        ['tag',     'web-bot-auth', 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: sig1=\"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n"
+--- request
+GET /t
+--- response_body chomp
+verified=[1] keyid=[PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA] agent=[bot.example.test]
+
+
 === TEST 2: covering @authority instead of @target-uri also verifies
 --- http_config
     auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
