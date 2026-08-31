@@ -92,3 +92,58 @@ my ($input, $sig) = sign(
 GET /t
 --- response_body chomp
 verified=[0] naive_scheme=[https]
+
+
+
+=== TEST 3: auth_httpsig_scheme_var repoints @scheme at a map-derived variable
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    include $TEST_NGINX_CONF_DIR/scheme_map.conf;
+--- config
+    location /t {
+        auth_httpsig_mode observe;
+        auth_httpsig_scheme_var $httpsig_test_naive_scheme;
+        return 200 "verified=[$httpsig_verified]";
+    }
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    scheme  => 'https',
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@scheme', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+    ],
+    req => $req,
+);
+
+"X-Forwarded-Proto: https\n"
+    . "Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n"
+--- request
+GET /t
+--- response_body chomp
+verified=[1]
+
+
+
+=== TEST 4: a bare "$" is rejected as an empty variable name
+--- config
+    location /t {
+        auth_httpsig_scheme_var $;
+        return 200;
+    }
+--- must_die
+--- error_log
+auth_httpsig: invalid variable name "$"
