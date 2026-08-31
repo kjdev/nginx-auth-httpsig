@@ -46,6 +46,11 @@ typedef struct {
 
 typedef struct {
     ngx_uint_t                              mode;
+    ngx_int_t                               scheme_index; /* nginx variable
+                                                           * index consulted
+                                                           * for @scheme;
+                                                           * defaults to
+                                                           * "scheme" */
     ngx_http_auth_httpsig_jwks_conf_t       jwks;
     ngx_http_auth_httpsig_profile_conf_t    profile;
     ngx_http_auth_httpsig_directory_conf_t  directory;
@@ -124,6 +129,8 @@ static char *ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf,
 
 static char *ngx_http_auth_httpsig_set_jwks_file(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
+static char *ngx_http_auth_httpsig_set_scheme_var(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_profile(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_alg(ngx_conf_t *cf,
@@ -186,6 +193,14 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_auth_httpsig_loc_conf_t, mode),
       &ngx_http_auth_httpsig_mode },
+
+    { ngx_string("auth_httpsig_scheme_var"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_http_auth_httpsig_set_scheme_var,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL },
 
     { ngx_string("auth_httpsig_jwks_file"),
       NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -439,6 +454,7 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
     }
 
     conf->mode = NGX_CONF_UNSET_UINT;
+    conf->scheme_index = NGX_CONF_UNSET;
     conf->profile.algs = NGX_CONF_UNSET_PTR;
     conf->profile.expires_max = NGX_CONF_UNSET;
     conf->profile.max_skew = NGX_CONF_UNSET;
@@ -465,6 +481,19 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode,
                               NGX_HTTP_AUTH_HTTPSIG_MODE_OFF);
+
+    if (conf->scheme_index == NGX_CONF_UNSET) {
+        conf->scheme_index = prev->scheme_index;
+    }
+
+    if (conf->scheme_index == NGX_CONF_UNSET) {
+        ngx_str_t default_scheme = ngx_string("scheme");
+
+        conf->scheme_index = ngx_http_get_variable_index(cf, &default_scheme);
+        if (conf->scheme_index == NGX_ERROR) {
+            return NGX_CONF_ERROR;
+        }
+    }
 
     if (conf->jwks.keys == NULL) {
         conf->jwks.keys = prev->jwks.keys;
@@ -590,6 +619,48 @@ static void
 ngx_http_auth_httpsig_cleanup_keys(void *data)
 {
     ngx_auth_httpsig_keys_free(data);
+}
+
+
+/*
+ * The value must be a "$name" variable reference (same idiom as
+ * ngx_http_geo_module's directive), not a bare name: it lets an operator
+ * point @scheme reconstruction at a "map"-defined variable (e.g. "map
+ * $http_x_forwarded_proto $httpsig_scheme { ... }") since nginx rejects a
+ * "map" that redefines the core "scheme" variable itself ("duplicate
+ * variable"). The index is resolved once here, at config time, so no
+ * lookup by name/hash happens per request.
+ */
+static char *
+ngx_http_auth_httpsig_set_scheme_var(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_http_auth_httpsig_loc_conf_t *lcf = conf;
+    ngx_str_t *value, name;
+
+    if (lcf->scheme_index != NGX_CONF_UNSET) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+    name = value[1];
+
+    if (name.len <= 1 || name.data[0] != '$') {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: invalid variable name \"%V\"",
+                           &name);
+        return NGX_CONF_ERROR;
+    }
+
+    name.len--;
+    name.data++;
+
+    lcf->scheme_index = ngx_http_get_variable_index(cf, &name);
+    if (lcf->scheme_index == NGX_ERROR) {
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
 }
 
 
@@ -1082,15 +1153,20 @@ ngx_http_auth_httpsig_collect_header(ngx_pool_t *pool, ngx_list_t *list,
 
 
 /*
- * @scheme must come from the "scheme" variable, not r->schema directly:
- * a map-based rewrite of $scheme (the operator's trust-boundary decision
- * for TLS-terminating load balancers) would otherwise be bypassed.
+ * @scheme must come from the nginx variable selected by
+ * "auth_httpsig_scheme_var" (the "scheme" core variable by default), not
+ * r->schema directly: the core "scheme" variable itself cannot be
+ * redefined via "map" (nginx rejects it as a "duplicate" variable), so an
+ * operator behind a TLS-terminating load balancer points this at a
+ * "map"-defined variable instead; the trust-boundary decision of which
+ * proxy header to believe stays in that "map", not in this module (ADR
+ * 0008).
  */
 static ngx_int_t
 ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
     ngx_auth_httpsig_request_t *req)
 {
-    static ngx_str_t scheme_name = ngx_string("scheme");
+    ngx_http_auth_httpsig_loc_conf_t *lcf;
     ngx_http_variable_value_t *vv;
     ngx_str_t host;
     u_char *qmark;
@@ -1113,9 +1189,9 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
 
     req->method = r->method_name;
 
-    vv = ngx_http_get_variable(r, &scheme_name,
-                               ngx_hash_key(scheme_name.data,
-                                            scheme_name.len));
+    lcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_httpsig_module);
+
+    vv = ngx_http_get_indexed_variable(r, lcf->scheme_index);
     if (vv == NULL || vv->not_found) {
         return NGX_ERROR;
     }
