@@ -718,6 +718,334 @@ TEST(build_too_long)
 }
 
 
+TEST(agent_key_item_member_is_extracted)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "signature-agent",
+                "g=\"https://agent.bot.goog\"");
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out,
+                  "\"signature-agent\";key=\"g\": "
+                  "\"https://agent.bot.goog\"\n"
+                  "\"@signature-params\": (\"signature-agent\";key=\"g\")");
+
+    return 0;
+}
+
+
+TEST(agent_key_inner_list_member_is_extracted)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "signature-agent", "g=(1 2)");
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out,
+                  "\"signature-agent\";key=\"g\": (1 2)\n"
+                  "\"@signature-params\": (\"signature-agent\";key=\"g\")");
+
+    return 0;
+}
+
+
+TEST(agent_key_absent_named_key_declines)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "signature-agent",
+                "h=\"https://bot.example.test\"");
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_MISSING_FIELD);
+
+    return 0;
+}
+
+
+TEST(agent_key_non_dictionary_field_declines)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "signature-agent",
+                "\"https://bot.example.test\"");
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_MISSING_FIELD);
+
+    return 0;
+}
+
+
+TEST(agent_key_field_absent_declines)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_MISSING_FIELD);
+
+    return 0;
+}
+
+
+TEST(agent_key_wrong_bare_type_falls_through_to_unsupported_param)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_auth_httpsig_sfv_param_t *param;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "signature-agent",
+                "g=\"https://agent.bot.goog\"");
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+
+    /* "key" must name a Dictionary member (a String), not merely be a
+     * bare String parameter value: a Token spelled the same way falls
+     * through to the generic, unconditional param rejection instead of
+     * being silently accepted. */
+    param = item->params->elts;
+    param[0].value.type = NGX_AUTH_HTTPSIG_SFV_TOKEN;
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_UNSUPPORTED_PARAM);
+
+    return 0;
+}
+
+
+TEST(agent_key_with_redundant_sf_flag_is_accepted)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_auth_httpsig_sfv_param_t *param;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "signature-agent",
+                "g=\"https://agent.bot.goog\"");
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+    push_param(pool, item, "sf", "");
+
+    /* "sf" is a Boolean flag (RFC 9421 section 2.1); its bare value is
+     * never spelled as a String in the SFV grammar. */
+    param = item->params->elts;
+    param[1].value.type = NGX_AUTH_HTTPSIG_SFV_BOOLEAN;
+    param[1].value.integer = 1;
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out,
+                  "\"signature-agent\";key=\"g\";sf: "
+                  "\"https://agent.bot.goog\"\n"
+                  "\"@signature-params\": (\"signature-agent\";key=\"g\";sf)");
+
+    return 0;
+}
+
+
+TEST(agent_key_with_false_sf_falls_through_to_unsupported_param)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_auth_httpsig_sfv_param_t *param;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "signature-agent",
+                "g=\"https://agent.bot.goog\"");
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+    push_param(pool, item, "sf", "");
+
+    /* "sf=?0" does not request strict serialization at all, so it must
+     * not be tolerated as the redundant-with-"key" case above. */
+    param = item->params->elts;
+    param[1].value.type = NGX_AUTH_HTTPSIG_SFV_BOOLEAN;
+    param[1].value.integer = 0;
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_UNSUPPORTED_PARAM);
+
+    return 0;
+}
+
+
+TEST(agent_key_extra_param_falls_through_to_unsupported_param)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+    push_header(pool, req->headers, "signature-agent",
+                "g=\"https://agent.bot.goog\"");
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "signature-agent");
+    push_param(pool, item, "key", "g");
+    push_param(pool, item, "name", "extra");
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_UNSUPPORTED_PARAM);
+
+    return 0;
+}
+
+
+TEST(agent_key_scope_limited_to_signature_agent)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_inner_list_t covered;
+    ngx_auth_httpsig_sfv_item_t *item;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    req = build_test_request(pool);
+
+    covered.items = ngx_array_create(pool, 1,
+                                      sizeof(ngx_auth_httpsig_sfv_item_t));
+    covered.params = ngx_array_create(pool, 1,
+                                       sizeof(ngx_auth_httpsig_sfv_param_t));
+
+    item = ngx_array_push(covered.items);
+    *item = build_component(pool, "content-type");
+    push_param(pool, item, "key", "g");
+
+    rc = ngx_auth_httpsig_base_build(pool, req, &covered, &out, &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_UNSUPPORTED_PARAM);
+
+    return 0;
+}
+
+
 TEST_SUITE(base)
 {
     RUN(rfc9421_appendix_b26_byte_exact);
@@ -744,4 +1072,14 @@ TEST_SUITE(base)
     RUN(build_rejects_unsupported_field_param);
     RUN(build_missing_field_fails);
     RUN(build_too_long);
+    RUN(agent_key_item_member_is_extracted);
+    RUN(agent_key_inner_list_member_is_extracted);
+    RUN(agent_key_absent_named_key_declines);
+    RUN(agent_key_non_dictionary_field_declines);
+    RUN(agent_key_field_absent_declines);
+    RUN(agent_key_wrong_bare_type_falls_through_to_unsupported_param);
+    RUN(agent_key_with_redundant_sf_flag_is_accepted);
+    RUN(agent_key_with_false_sf_falls_through_to_unsupported_param);
+    RUN(agent_key_extra_param_falls_through_to_unsupported_param);
+    RUN(agent_key_scope_limited_to_signature_agent);
 }
