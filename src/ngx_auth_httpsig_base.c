@@ -32,8 +32,17 @@ static ngx_int_t ngx_auth_httpsig_base_buf_put_str(
 
 static ngx_int_t ngx_auth_httpsig_base_reject_params(
     const ngx_array_t *params, ngx_auth_httpsig_base_reason_t *reason);
+static const ngx_auth_httpsig_sfv_bare_t *
+ngx_auth_httpsig_base_field_agent_key(const ngx_str_t *name,
+    const ngx_array_t *params);
+static ngx_int_t ngx_auth_httpsig_base_field_agent_member(ngx_pool_t *pool,
+    const ngx_auth_httpsig_request_t *req, const ngx_str_t *key,
+    ngx_str_t *out, ngx_auth_httpsig_base_reason_t *reason);
 static ngx_str_t ngx_auth_httpsig_base_effective_path(
     const ngx_auth_httpsig_request_t *req);
+
+static const ngx_str_t ngx_auth_httpsig_base_signature_agent
+    = ngx_string("signature-agent");
 
 static ngx_int_t ngx_auth_httpsig_base_query(ngx_pool_t *pool,
     const ngx_auth_httpsig_request_t *req, ngx_str_t *out);
@@ -495,6 +504,120 @@ ngx_auth_httpsig_base_query_param(ngx_pool_t *pool,
 }
 
 
+/*
+ * Recognizes the field-component parameters this layer supports on
+ * "signature-agent": "key" alone, or "key" together with a Boolean-true
+ * "sf" (RFC 9421 section 2.1: "the sf parameter's functionality is
+ * already covered when the key parameter is used on a Dictionary item",
+ * i.e. redundant, not incompatible). Returns the "key" parameter's bare
+ * value (always a String, RFC 9421 section 2.1.2) or NULL if `component`
+ * doesn't have exactly one of those two shapes, in which case the caller
+ * falls back to ngx_auth_httpsig_base_reject_params() so every other
+ * combination (an unrelated field with any params, "key" with the wrong
+ * bare type, "sf" with a false or non-Boolean value, "key" alongside a
+ * parameter other than "sf") keeps being rejected exactly as before.
+ * Restricted to "signature-agent" rather than generalized to any
+ * Dictionary-valued HTTP field because this module only interprets
+ * Structured Fields for Signature-Input / Signature / Signature-Agent.
+ */
+static const ngx_auth_httpsig_sfv_bare_t *
+ngx_auth_httpsig_base_field_agent_key(const ngx_str_t *name,
+    const ngx_array_t *params)
+{
+    const ngx_auth_httpsig_sfv_bare_t *key, *sf;
+
+    if (!ngx_auth_httpsig_str_eq(name,
+                                 &ngx_auth_httpsig_base_signature_agent))
+    {
+        return NULL;
+    }
+
+    if (params->nelts == 0 || params->nelts > 2) {
+        return NULL;
+    }
+
+    key = ngx_auth_httpsig_sfv_param_get(params, "key");
+    if (key == NULL || key->type != NGX_AUTH_HTTPSIG_SFV_STRING) {
+        return NULL;
+    }
+
+    if (params->nelts == 2) {
+        sf = ngx_auth_httpsig_sfv_param_get(params, "sf");
+        if (sf == NULL || sf->type != NGX_AUTH_HTTPSIG_SFV_BOOLEAN
+            || sf->integer != 1)
+        {
+            return NULL;
+        }
+    }
+
+    return key;
+}
+
+
+/*
+ * RFC 9421 section 2.1.2: naming "key" selects one member of a
+ * Dictionary-valued HTTP field, and the base string carries that
+ * member's own canonical serialization (RFC 8941 section 4.1.1) --
+ * never the field's raw bytes. A named key absent from the Dictionary,
+ * or a field that isn't a well-formed Dictionary at all, "MUST cause
+ * an error in the signature base generation" (ibid.).
+ *
+ * This is independent of, and stricter than, the Dictionary ->
+ * Item(String) -> raw-bytes fallback chain
+ * ngx_auth_httpsig_profile_agent_url() uses to tolerate legacy senders when
+ * extracting $httpsig_agent: that fallback exists only because the
+ * draft still lets verifiers accept a bare string, and only matters
+ * after a signature has already verified. Naming "key" is the signer
+ * stating unambiguously that this field is a Dictionary, so there is
+ * no lower form to fall back to here.
+ */
+static ngx_int_t
+ngx_auth_httpsig_base_field_agent_member(ngx_pool_t *pool,
+    const ngx_auth_httpsig_request_t *req, const ngx_str_t *key,
+    ngx_str_t *out, ngx_auth_httpsig_base_reason_t *reason)
+{
+    ngx_auth_httpsig_sfv_dictionary_t *dict;
+    const ngx_auth_httpsig_sfv_value_t *member;
+    const ngx_str_t *name;
+    ngx_str_t raw;
+    ngx_int_t rc;
+
+    name = &ngx_auth_httpsig_base_signature_agent;
+
+    rc = ngx_auth_httpsig_base_field_value(pool, req, name, &raw);
+    if (rc == NGX_DECLINED) {
+        *reason = NGX_AUTH_HTTPSIG_BASE_MISSING_FIELD;
+        return NGX_DECLINED;
+    }
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    rc = ngx_auth_httpsig_sfv_parse_dictionary(pool, &raw, &dict, NULL);
+    if (rc == NGX_DECLINED) {
+        *reason = NGX_AUTH_HTTPSIG_BASE_MISSING_FIELD;
+        return NGX_DECLINED;
+    }
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    member = ngx_auth_httpsig_sfv_dict_get(dict, key);
+    if (member == NULL) {
+        *reason = NGX_AUTH_HTTPSIG_BASE_MISSING_FIELD;
+        return NGX_DECLINED;
+    }
+
+    if (member->type == NGX_AUTH_HTTPSIG_SFV_MEMBER_INNER_LIST) {
+        return ngx_auth_httpsig_sfv_serialize_inner_list(pool,
+                                                         &member->inner_list,
+                                                         out);
+    }
+
+    return ngx_auth_httpsig_sfv_serialize_item(pool, &member->item, out);
+}
+
+
 static ngx_int_t
 ngx_auth_httpsig_base_field(ngx_pool_t *pool,
     const ngx_auth_httpsig_request_t *req,
@@ -502,6 +625,7 @@ ngx_auth_httpsig_base_field(ngx_pool_t *pool,
     ngx_auth_httpsig_base_reason_t *reason)
 {
     const ngx_str_t *name;
+    const ngx_auth_httpsig_sfv_bare_t *agent_key;
     ngx_uint_t i;
     ngx_int_t rc;
 
@@ -514,6 +638,14 @@ ngx_auth_httpsig_base_field(ngx_pool_t *pool,
             *reason = NGX_AUTH_HTTPSIG_BASE_UNKNOWN_COMPONENT;
             return NGX_DECLINED;
         }
+    }
+
+    agent_key = ngx_auth_httpsig_base_field_agent_key(name,
+                                                      component->params);
+    if (agent_key != NULL) {
+        return ngx_auth_httpsig_base_field_agent_member(pool, req,
+                                                        &agent_key->value,
+                                                        out, reason);
     }
 
     rc = ngx_auth_httpsig_base_reject_params(component->params, reason);
