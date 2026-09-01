@@ -55,3 +55,13 @@ sed -i '/events {/i load_module "/usr/lib/nginx/modules/ngx_http_auth_httpsig_mo
 EOS
 
 COPY --from=builder /usr/lib/nginx/modules/ngx_http_auth_httpsig_module.so /usr/lib/nginx/modules/ngx_http_auth_httpsig_module.so
+
+# [proxy]
+FROM module AS proxy
+
+RUN --mount=type=cache,target=/var/cache/apk sh -ex <<'EOS'
+apk add ca-certificates
+EOS
+
+COPY docker/25-httpsig-conf.sh /docker-entrypoint.d/25-httpsig-conf.sh
+RUN chmod +x /docker-entrypoint.d/25-httpsig-conf.sh
