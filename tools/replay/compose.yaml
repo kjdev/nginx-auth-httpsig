@@ -1,0 +1,47 @@
+services:
+  backend:
+    image: nginx:alpine
+    volumes:
+      - ./backend.conf:/etc/nginx/nginx.conf:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "80"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  # Standalone-proxy target (root Dockerfile) configured entirely through
+  # HTTPSIG_* env vars, dedicated to replaying real crawler traffic.
+  # HTTPSIG_TRUSTED_AGENTS / HTTPSIG_MAX_SKEW are left wide open for this
+  # purpose and must never be set that way in a live deployment. No
+  # HTTPSIG_CA_FILE: real crawler key directories are verified against the
+  # system CA bundle.
+  proxy:
+    image: ghcr.io/kjdev/nginx-auth-httpsig/nginx:latest-proxy
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: proxy
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      HTTPSIG_UPSTREAM: http://backend:80
+      HTTPSIG_UPSTREAM_ALLOW_INSECURE: "1"
+      HTTPSIG_TRUSTED_AGENTS: ${REPLAY_TRUSTED_AGENTS:-}
+      HTTPSIG_MAX_SKEW: ${REPLAY_MAX_SKEW:-365d}
+      HTTPSIG_TRUST_X_FORWARDED_PROTO: "1"
+    ports:
+      - "127.0.0.1:8082:8080"
+    healthcheck:
+      # A bare TCP probe, not an HTTP request: any request through
+      # location / is logged in httpsig_observe format (verified/agent/
+      # error fields), which is the same log the README's "Reading the
+      # results" step parses. An HTTP probe would inject synthetic
+      # unsigned-request rows into that aggregation on every interval.
+      #
+      # 127.0.0.1, not localhost: /etc/hosts resolves localhost to ::1
+      # first, and `listen 8080;` (no ipv6only=off) only binds IPv4.
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8080"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
