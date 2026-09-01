@@ -284,6 +284,92 @@ TEST(keys_chain_second_null_returns_first)
 }
 
 
+TEST(keys_has_kid_matches_label_not_thumbprint)
+{
+    EVP_PKEY                *pkey;
+    ngx_str_t                jwk, jwks_json, thumbprint, kid;
+    ngx_auth_httpsig_keys_t *keys;
+    nxe_jwx_jwks_t           *ref;
+
+    pkey = test_gen_ed25519();
+    ASSERT(pkey != NULL);
+
+    kid = str("short-label");
+
+    jwk = test_jwk_okp(pkey, "Ed25519", 32, (const char *) kid.data, NULL,
+                        pool);
+    ASSERT(jwk.data != NULL);
+
+    jwks_json = test_jwks_build(&jwk, 1, pool);
+    ASSERT(jwks_json.data != NULL);
+
+    keys = NULL;
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, &keys));
+    ASSERT(keys != NULL);
+
+    ref = nxe_jwx_jwks_parse(&jwks_json, pool);
+    ASSERT(ref != NULL);
+    ASSERT_EQ_INT(NGX_OK, nxe_jwx_jwks_thumbprint(ref, 0, &thumbprint));
+
+    ASSERT(!ngx_auth_httpsig_keys_has(keys, &kid));
+    ASSERT(ngx_auth_httpsig_keys_has_kid(keys, &kid));
+
+    ASSERT(ngx_auth_httpsig_keys_has(keys, &thumbprint));
+    ASSERT(!ngx_auth_httpsig_keys_has_kid(keys, &thumbprint));
+
+    ngx_auth_httpsig_keys_free(keys);
+    EVP_PKEY_free(pkey);
+
+    return 0;
+}
+
+
+TEST(keys_chain_has_kid_checks_both)
+{
+    EVP_PKEY                *pkey_a, *pkey_b;
+    ngx_str_t                jwk_a, jwk_b, jwks_a, jwks_b, kid_a, kid_b;
+    ngx_auth_httpsig_keys_t *first, *second, *chain;
+
+    pkey_a = test_gen_ed25519();
+    ASSERT(pkey_a != NULL);
+    pkey_b = test_gen_ed25519();
+    ASSERT(pkey_b != NULL);
+
+    kid_a = str("label-a");
+    kid_b = str("label-b");
+
+    jwk_a = test_jwk_okp(pkey_a, "Ed25519", 32, (const char *) kid_a.data,
+                          NULL, pool);
+    jwk_b = test_jwk_okp(pkey_b, "Ed25519", 32, (const char *) kid_b.data,
+                          NULL, pool);
+    jwks_a = test_jwks_build(&jwk_a, 1, pool);
+    jwks_b = test_jwks_build(&jwk_b, 1, pool);
+
+    first = NULL;
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_a, NULL, NGX_LOG_EMERG,
+                                        &first));
+    second = NULL;
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_b, NULL, NGX_LOG_EMERG,
+                                        &second));
+
+    chain = ngx_auth_httpsig_keys_chain(pool, first, second);
+    ASSERT(chain != NULL);
+
+    ASSERT(ngx_auth_httpsig_keys_has_kid(chain, &kid_a));
+    ASSERT(ngx_auth_httpsig_keys_has_kid(chain, &kid_b));
+
+    ngx_auth_httpsig_keys_free(first);
+    ngx_auth_httpsig_keys_free(second);
+    EVP_PKEY_free(pkey_a);
+    EVP_PKEY_free(pkey_b);
+
+    return 0;
+}
+
+
 TEST(keys_chain_same_keyid_in_both_resolves)
 {
     EVP_PKEY                *pkey;
@@ -346,5 +432,7 @@ TEST_SUITE(keys)
     RUN(keys_chain_prefers_first_when_both_have_keyid);
     RUN(keys_chain_first_null_returns_second);
     RUN(keys_chain_second_null_returns_first);
+    RUN(keys_has_kid_matches_label_not_thumbprint);
+    RUN(keys_chain_has_kid_checks_both);
     RUN(keys_chain_same_keyid_in_both_resolves);
 }

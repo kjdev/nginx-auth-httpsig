@@ -30,13 +30,13 @@ str(const char *s)
 
 
 /*
- * Generates an Ed25519 keypair, loads it as a single-key JWKS, and
- * signs `base`. Returns the loaded keyset, the key's thumbprint, and
- * the raw signature via the out params; the caller must
- * EVP_PKEY_free(*pkey_out).
+ * Generates an Ed25519 keypair, loads it as a single-key JWKS (with
+ * raw JWK `kid` set to `kid` when non-NULL), and signs `base`. Returns
+ * the loaded keyset, the key's thumbprint, and the raw signature via
+ * the out params; the caller must EVP_PKEY_free(*pkey_out).
  */
 static ngx_int_t
-build_fixture(ngx_pool_t *pool, const ngx_str_t *base,
+build_fixture_kid(ngx_pool_t *pool, const ngx_str_t *base, const char *kid,
     ngx_auth_httpsig_keys_t **keys_out, ngx_str_t *thumbprint_out,
     ngx_str_t *signature_out, EVP_PKEY **pkey_out)
 {
@@ -51,7 +51,7 @@ build_fixture(ngx_pool_t *pool, const ngx_str_t *base,
         return NGX_ERROR;
     }
 
-    jwk = test_jwk_okp(pkey, "Ed25519", 32, NULL, NULL, pool);
+    jwk = test_jwk_okp(pkey, "Ed25519", 32, kid, NULL, pool);
     if (jwk.data == NULL) {
         return NGX_ERROR;
     }
@@ -88,6 +88,16 @@ build_fixture(ngx_pool_t *pool, const ngx_str_t *base,
     *pkey_out = pkey;
 
     return NGX_OK;
+}
+
+
+static ngx_int_t
+build_fixture(ngx_pool_t *pool, const ngx_str_t *base,
+    ngx_auth_httpsig_keys_t **keys_out, ngx_str_t *thumbprint_out,
+    ngx_str_t *signature_out, EVP_PKEY **pkey_out)
+{
+    return build_fixture_kid(pool, base, NULL, keys_out, thumbprint_out,
+                              signature_out, pkey_out);
 }
 
 
@@ -167,6 +177,33 @@ TEST(verify_unknown_keyid)
 }
 
 
+TEST(verify_non_thumbprint_keyid_reports_kid_label)
+{
+    ngx_auth_httpsig_keys_t   *keys;
+    ngx_str_t                  base, thumbprint, signature, kid;
+    EVP_PKEY                  *pkey;
+    ngx_auth_httpsig_result_t  result;
+
+    base = str("this is the signature base string");
+
+    ASSERT_EQ_INT(NGX_OK,
+        build_fixture_kid(pool, &base, "short-label", &keys, &thumbprint,
+                           &signature, &pkey));
+
+    kid = str("short-label");
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_verify_ed25519(pool, keys, &kid, &base,
+                                         &signature, &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT, result);
+
+    ngx_auth_httpsig_keys_free(keys);
+    EVP_PKEY_free(pkey);
+
+    return 0;
+}
+
+
 TEST(verify_wrong_signature_length)
 {
     ngx_auth_httpsig_keys_t   *keys;
@@ -199,5 +236,6 @@ TEST_SUITE(verify)
     RUN(verify_success);
     RUN(verify_tampered_signature_is_mismatch);
     RUN(verify_unknown_keyid);
+    RUN(verify_non_thumbprint_keyid_reports_kid_label);
     RUN(verify_wrong_signature_length);
 }
