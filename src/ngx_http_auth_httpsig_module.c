@@ -80,7 +80,9 @@ typedef struct {
  * cache miss while another worker fetches, or a rejected/unparsable
  * response), which evaluate() maps to
  * NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE instead of
- * NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID, and directory_reason records why
+ * NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID or
+ * NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT, and directory_reason
+ * records why
  * (only meaningful alongside keys_unavailable). jwks/directory_generation
  * identify the fetched document (bytes and SHM generation, respectively)
  * without parsing it; evaluate() resolves them into a keyset through the
@@ -1988,7 +1990,8 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
         return NGX_OK;
     }
 
-    if (result == NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID
+    if ((result == NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID
+         || result == NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT)
         && ctx->keys_unavailable)
     {
         result = NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE;

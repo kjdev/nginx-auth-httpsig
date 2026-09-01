@@ -28,7 +28,8 @@ typedef enum {
     NGX_AUTH_HTTPSIG_RESULT_SIGNATURE_MISMATCH,
     NGX_AUTH_HTTPSIG_RESULT_EXPIRED,
     NGX_AUTH_HTTPSIG_RESULT_PROFILE_MISMATCH,
-    NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE
+    NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE,
+    NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT
 } ngx_auth_httpsig_result_t;
 
 
@@ -45,6 +46,15 @@ const char *ngx_auth_httpsig_result_name(ngx_auth_httpsig_result_t result);
  * underlying keyset lookup is oracle-resistant, so both cases must
  * still be treated identically by the caller wherever the outcome is
  * observable to the client (e.g. $httpsig_verified).
+ *
+ * NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT is a refinement of
+ * UNKNOWN_KEYID: `keyid` does not match any key's RFC 7638 thumbprint,
+ * but does match a raw JWK `kid` in the keyset (e.g. a crawler that
+ * puts its JWKS `kid` label straight into `keyid` instead of computing
+ * the thumbprint the draft requires). It is diagnostic only -- key
+ * resolution and the fail-close outcome are unchanged, and it carries
+ * no more oracle risk than UNKNOWN_KEYID, since it only reports on the
+ * JWKS the operator already published.
  *
  * Return value:
  *   NGX_OK        `*result` is NGX_AUTH_HTTPSIG_RESULT_OK.

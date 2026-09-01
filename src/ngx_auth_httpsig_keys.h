@@ -28,16 +28,19 @@ typedef struct ngx_auth_httpsig_keys_s ngx_auth_httpsig_keys_t;
 
 typedef ngx_flag_t (*ngx_auth_httpsig_keys_has_pt)(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid);
+typedef ngx_flag_t (*ngx_auth_httpsig_keys_has_kid_pt)(
+    const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *kid);
 typedef ngx_int_t (*ngx_auth_httpsig_keys_verify_pt)(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid,
     const ngx_str_t *msg, const ngx_str_t *sig, ngx_pool_t *pool);
 typedef void (*ngx_auth_httpsig_keys_free_pt)(ngx_auth_httpsig_keys_t *keys);
 
 typedef struct {
-    ngx_str_t                        name;
-    ngx_auth_httpsig_keys_has_pt     has;
-    ngx_auth_httpsig_keys_verify_pt  verify;
-    ngx_auth_httpsig_keys_free_pt    free;
+    ngx_str_t                         name;
+    ngx_auth_httpsig_keys_has_pt      has;
+    ngx_auth_httpsig_keys_has_kid_pt  has_kid;
+    ngx_auth_httpsig_keys_verify_pt   verify;
+    ngx_auth_httpsig_keys_free_pt     free;
 } ngx_auth_httpsig_keys_source_t;
 
 struct ngx_auth_httpsig_keys_s {
@@ -85,6 +88,19 @@ ngx_int_t ngx_auth_httpsig_keys_load_jwks(ngx_pool_t *pool,
  * thumbprint). Returns 0 if `keys` or `keyid` is NULL. */
 ngx_flag_t ngx_auth_httpsig_keys_has(const ngx_auth_httpsig_keys_t *keys,
     const ngx_str_t *keyid);
+
+/*
+ * Reports whether `keys` holds a key whose raw JWK `kid` (not its RFC
+ * 7638 thumbprint) matches `kid`. Diagnostic only: this module never
+ * resolves a key by `kid` for verification, since a `kid`-keyed lookup
+ * gives up the thumbprint's self-certifying property (a given keyid
+ * value is guaranteed to name one specific public key). Use this only
+ * to tell "keyid isn't a thumbprint of any key we hold, but matches a
+ * raw kid" apart from "keyid matches nothing at all" when reporting
+ * $httpsig_error. Returns 0 if `keys` or `kid` is NULL.
+ */
+ngx_flag_t ngx_auth_httpsig_keys_has_kid(const ngx_auth_httpsig_keys_t *keys,
+    const ngx_str_t *kid);
 
 /*
  * Verifies a detached signature against the key identified by `keyid`.

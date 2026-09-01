@@ -33,6 +33,8 @@ static ngx_int_t ngx_auth_httpsig_keys_check_ed25519_only_body(
 
 static ngx_flag_t ngx_auth_httpsig_keys_jwks_has(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid);
+static ngx_flag_t ngx_auth_httpsig_keys_jwks_has_kid(
+    const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *kid);
 static ngx_int_t ngx_auth_httpsig_keys_jwks_verify(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid,
     const ngx_str_t *msg, const ngx_str_t *sig, ngx_pool_t *pool);
@@ -40,6 +42,8 @@ static void ngx_auth_httpsig_keys_jwks_free(ngx_auth_httpsig_keys_t *keys);
 
 static ngx_flag_t ngx_auth_httpsig_keys_chain_has(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid);
+static ngx_flag_t ngx_auth_httpsig_keys_chain_has_kid(
+    const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *kid);
 static ngx_int_t ngx_auth_httpsig_keys_chain_verify(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid,
     const ngx_str_t *msg, const ngx_str_t *sig, ngx_pool_t *pool);
@@ -51,6 +55,7 @@ static const ngx_auth_httpsig_keys_source_t
 {
     ngx_string("jwks_file"),
     ngx_auth_httpsig_keys_jwks_has,
+    ngx_auth_httpsig_keys_jwks_has_kid,
     ngx_auth_httpsig_keys_jwks_verify,
     ngx_auth_httpsig_keys_jwks_free
 };
@@ -60,6 +65,7 @@ static const ngx_auth_httpsig_keys_source_t
 {
     ngx_string("chain"),
     ngx_auth_httpsig_keys_chain_has,
+    ngx_auth_httpsig_keys_chain_has_kid,
     ngx_auth_httpsig_keys_chain_verify,
     ngx_auth_httpsig_keys_chain_free
 };
@@ -138,6 +144,18 @@ ngx_auth_httpsig_keys_has(const ngx_auth_httpsig_keys_t *keys,
     }
 
     return keys->source->has(keys, keyid);
+}
+
+
+ngx_flag_t
+ngx_auth_httpsig_keys_has_kid(const ngx_auth_httpsig_keys_t *keys,
+    const ngx_str_t *kid)
+{
+    if (keys == NULL || kid == NULL) {
+        return 0;
+    }
+
+    return keys->source->has_kid(keys, kid);
 }
 
 
@@ -311,6 +329,14 @@ ngx_auth_httpsig_keys_jwks_has(const ngx_auth_httpsig_keys_t *keys,
 }
 
 
+static ngx_flag_t
+ngx_auth_httpsig_keys_jwks_has_kid(const ngx_auth_httpsig_keys_t *keys,
+    const ngx_str_t *kid)
+{
+    return nxe_jwx_jwks_has_kid(keys->data, kid);
+}
+
+
 static ngx_int_t
 ngx_auth_httpsig_keys_jwks_verify(const ngx_auth_httpsig_keys_t *keys,
     const ngx_str_t *keyid, const ngx_str_t *msg, const ngx_str_t *sig,
@@ -335,6 +361,17 @@ ngx_auth_httpsig_keys_chain_has(const ngx_auth_httpsig_keys_t *keys,
 
     return ngx_auth_httpsig_keys_has(data->first, keyid)
            || ngx_auth_httpsig_keys_has(data->second, keyid);
+}
+
+
+static ngx_flag_t
+ngx_auth_httpsig_keys_chain_has_kid(const ngx_auth_httpsig_keys_t *keys,
+    const ngx_str_t *kid)
+{
+    ngx_auth_httpsig_keys_chain_data_t *data = keys->data;
+
+    return ngx_auth_httpsig_keys_has_kid(data->first, kid)
+           || ngx_auth_httpsig_keys_has_kid(data->second, kid);
 }
 
 

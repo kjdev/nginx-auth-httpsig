@@ -32,6 +32,8 @@ ngx_auth_httpsig_result_name(ngx_auth_httpsig_result_t result)
         return "profile_mismatch";
     case NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE:
         return "key_unavailable";
+    case NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT:
+        return "keyid_not_thumbprint";
     }
 
     return "unknown";
@@ -65,9 +67,15 @@ ngx_auth_httpsig_verify_ed25519(ngx_pool_t *pool,
     /* Distinguishing "unknown keyid" from "signature mismatch" here is
      * for logging only: ngx_auth_httpsig_keys_verify() below already
      * collapses the same two cases into one NGX_DECLINED, so a caller
-     * that skipped this check would reach the identical outcome. */
+     * that skipped this check would reach the identical outcome. The
+     * same applies to the KEYID_NOT_THUMBPRINT refinement below: it is
+     * a more specific reason for the same NGX_DECLINED, computed
+     * against the operator's own published JWKS, so it does not open
+     * up any distinction an attacker could not already probe for. */
     if (!ngx_auth_httpsig_keys_has(keys, keyid)) {
-        *result = NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID;
+        *result = ngx_auth_httpsig_keys_has_kid(keys, keyid)
+            ? NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT
+            : NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID;
         return NGX_DECLINED;
     }
 
