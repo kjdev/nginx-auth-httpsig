@@ -1191,7 +1191,12 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
 
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_httpsig_module);
 
-    vv = ngx_http_get_indexed_variable(r, lcf->scheme_index);
+    /*
+     * auth_httpsig_scheme_var may point at a "map"-defined variable,
+     * which nginx marks no_cacheable; get_flushed forces re-evaluation
+     * instead of returning a value cached before an internal redirect.
+     */
+    vv = ngx_http_get_flushed_variable(r, lcf->scheme_index);
     if (vv == NULL || vv->not_found) {
         return NGX_ERROR;
     }
