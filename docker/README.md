@@ -47,6 +47,26 @@ docker run --rm -p 8080:8080 \
 At least one of `HTTPSIG_JWKS_FILE` or `HTTPSIG_TRUSTED_AGENTS` is required;
 the entrypoint exits with an error before nginx starts if neither is set.
 
+### Verification result headers sent upstream
+
+The generated config always forwards the observe-mode verification result to
+`HTTPSIG_UPSTREAM` as request headers:
+
+| header | source variable |
+|---|---|
+| `X-Httpsig-Verified` | `$httpsig_verified` |
+| `X-Httpsig-Keyid` | `$httpsig_keyid` |
+| `X-Httpsig-Error` | `$httpsig_error` |
+| `X-Httpsig-Agent` | `$httpsig_agent` |
+
+A header is omitted entirely (not sent empty) when its source variable is
+unset. `X-Httpsig-Verified` / `X-Httpsig-Error` are both absent when there is
+no verdict (unsigned request, or a key lookup failure that fails open).
+Otherwise `X-Httpsig-Verified` is sent as `1` on success or `0` on failure,
+and `X-Httpsig-Error` is present only on failure. The upstream must not trust
+these headers from any source other than this proxy (strip or overwrite them
+at the edge if clients can reach the upstream directly).
+
 ### Behind a TLS-terminating load balancer
 
 `nginx` does not allow `$scheme` to be overridden via `map` (it rejects a
@@ -59,7 +79,7 @@ If a front-end load balancer terminates TLS and forwards `X-Forwarded-Proto`,
 set `HTTPSIG_TRUST_X_FORWARDED_PROTO` to any non-empty value. The entrypoint
 then emits:
 
-```
+```nginx
 map $http_x_forwarded_proto $httpsig_scheme {
     https   https;
     default http;
