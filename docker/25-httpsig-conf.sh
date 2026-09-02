@@ -27,7 +27,13 @@ case "$HTTPSIG_UPSTREAM" in
         echo "$ME: HTTPSIG_UPSTREAM must be scheme+host[:port] only: $HTTPSIG_UPSTREAM" >&2
         exit 1
         ;;
-    http://*|https://*)
+    http://*)
+        [ -n "${HTTPSIG_UPSTREAM_ALLOW_INSECURE:-}" ] || {
+            echo "$ME: HTTPSIG_UPSTREAM uses http://; set HTTPSIG_UPSTREAM_ALLOW_INSECURE to allow a cleartext upstream: $HTTPSIG_UPSTREAM" >&2
+            exit 1
+        }
+        ;;
+    https://*)
         ;;
     *)
         echo "$ME: HTTPSIG_UPSTREAM must start with http:// or https://: $HTTPSIG_UPSTREAM" >&2
