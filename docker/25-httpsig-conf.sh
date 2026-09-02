@@ -181,6 +181,15 @@ ${upstream_tls_directive}
         proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header Connection        "";
+        # \$httpsig_verified / \$httpsig_error are both unset (empty) when
+        # there is no verdict (unsigned request, or a key lookup failure
+        # that fails open); nginx omits a proxy_set_header whose value is
+        # empty, so upstream sees no header at all rather than one with an
+        # empty value.
+        proxy_set_header X-Httpsig-Verified \$httpsig_verified;
+        proxy_set_header X-Httpsig-Keyid    \$httpsig_keyid;
+        proxy_set_header X-Httpsig-Agent    \$httpsig_agent;
+        proxy_set_header X-Httpsig-Error    \$httpsig_error;
     }
 ${fetch_location}
 }
