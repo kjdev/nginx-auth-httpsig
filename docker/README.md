@@ -21,6 +21,7 @@ docker build --target proxy  -t httpsig-proxy  .
 ```sh
 docker run --rm -p 8080:8080 \
   -e HTTPSIG_UPSTREAM=http://backend.internal:80 \
+  -e HTTPSIG_UPSTREAM_ALLOW_INSECURE=1 \
   -e HTTPSIG_TRUSTED_AGENTS='agent.bot.example crawler.bot.example' \
   httpsig-proxy
 ```
@@ -30,6 +31,7 @@ docker run --rm -p 8080:8080 \
 | variable | default | effect |
 |---|---|---|
 | `HTTPSIG_UPSTREAM` | (required) | `proxy_pass` target. Scheme + host[:port] only, no path |
+| `HTTPSIG_UPSTREAM_ALLOW_INSECURE` | — | set to any non-empty value (including `0`) to allow `http://` in `HTTPSIG_UPSTREAM` (rejected by default; `https://` always allowed) |
 | `HTTPSIG_LISTEN` | `443` if TLS is configured, else `8080` | `listen` port |
 | `HTTPSIG_SERVER_NAME` | `_` | `server_name` |
 | `HTTPSIG_SSL_CERTIFICATE` / `HTTPSIG_SSL_CERTIFICATE_KEY` | — | set both to terminate TLS (`listen ... ssl` + `ssl_certificate*`) |
