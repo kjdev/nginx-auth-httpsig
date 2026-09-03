@@ -7,6 +7,8 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#include <nxe_phase.h>
+
 #include "ngx_auth_httpsig_base.h"
 #include "ngx_auth_httpsig_cache.h"
 #include "ngx_auth_httpsig_directory.h"
@@ -384,8 +386,6 @@ static ngx_int_t
 ngx_http_auth_httpsig_init(ngx_conf_t *cf)
 {
     ngx_http_auth_httpsig_main_conf_t *mcf;
-    ngx_http_core_main_conf_t *cmcf;
-    ngx_http_handler_pt *h;
 
     mcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_httpsig_module);
 
@@ -393,14 +393,13 @@ ngx_http_auth_httpsig_init(ngx_conf_t *cf)
         return NGX_OK;
     }
 
-    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
-
-    h = ngx_array_push(&cmcf->phases[NGX_HTTP_PREACCESS_PHASE].handlers);
-    if (h == NULL) {
+    if (nxe_phase_add_handler(cf, NGX_HTTP_PREACCESS_PHASE,
+                              NXE_PHASE_PRIO_HTTPSIG,
+                              ngx_http_auth_httpsig_directory_handler,
+                              "auth_httpsig") != NGX_OK)
+    {
         return NGX_ERROR;
     }
-
-    *h = ngx_http_auth_httpsig_directory_handler;
 
     return NGX_OK;
 }
