@@ -61,6 +61,16 @@ sub agent_host {
     return $host;
 }
 
+# Values from the sample file reach the terminal via print/printf below;
+# neutralize control characters (e.g. ANSI escapes) so a crafted sample
+# cannot manipulate the display.
+sub display_safe {
+    my ($s) = @_;
+    return $s unless defined $s;
+    $s =~ s/[\x00-\x1f\x7f]/?/g;
+    return $s;
+}
+
 if ($opt{list_agents}) {
     my %count;
 
@@ -78,7 +88,7 @@ if ($opt{list_agents}) {
     close $fh;
 
     for my $host (sort { $count{$b} <=> $count{$a} } keys %count) {
-        printf "%6d  %s\n", $count{$host}, $host;
+        printf "%6d  %s\n", $count{$host}, display_safe($host);
     }
 
     exit 0;
@@ -98,21 +108,25 @@ SAMPLE: while (my $line = <$fh>) {
         next;
     }
 
-    unless (defined $sample->{signature} && defined $sample->{signature_input}) {
+    unless (defined $sample->{signature} && length $sample->{signature}
+            && defined $sample->{signature_input}
+            && length $sample->{signature_input}) {
         $skipped++;
         next;
     }
 
     my $path = $sample->{path} // '/';
     if ($path !~ m{\A/[^\s\x00-\x1f?#]*\z}) {
-        warn "replay-samples.pl: skipping line $. with unsafe path: $path\n";
+        warn "replay-samples.pl: skipping line $. with unsafe path: "
+            . display_safe($path) . "\n";
         $skipped++;
         next;
     }
 
     my $method = $sample->{method} // 'GET';
     if ($method !~ /\A[!#\$%&'*+\-.^_`|~0-9A-Za-z]+\z/) {
-        warn "replay-samples.pl: skipping line $. with unsafe method: $method\n";
+        warn "replay-samples.pl: skipping line $. with unsafe method: "
+            . display_safe($method) . "\n";
         $skipped++;
         next;
     }
@@ -147,7 +161,8 @@ SAMPLE: while (my $line = <$fh>) {
     my @cmd = ('curl', '-sS', '-o', '/dev/null', '-w', '%{http_code}',
                '-X', $method, @headers, '--globoff', "$base$path");
 
-    print '-> ', $method, ' ', $path, ' (host=', ($host // '-'), ') ';
+    print '-> ', display_safe($method), ' ', display_safe($path),
+        ' (host=', display_safe($host // '-'), ') ';
     if (system(@cmd) != 0) {
         if ($? == -1) {
             warn "replay-samples.pl: failed to run curl for line $.: $!\n";
