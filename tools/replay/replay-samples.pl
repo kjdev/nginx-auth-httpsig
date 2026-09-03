@@ -48,17 +48,15 @@ sub usage {
 # ("\"https://bot.duckduckgo.com\""), or an unquoted URL
 # ("https://bot.duckduckgo.com"). All that's needed here is the host, so
 # pull the first quoted or bare https?:// URL out and skip real SFV parsing.
-sub agent_host {
+sub agent_hosts {
     my ($signature_agent) = @_;
-    return undef unless defined $signature_agent;
+    return () unless defined $signature_agent;
 
-    my ($url) = $signature_agent =~ /"(https?:\/\/[^"]+)"/;
-    ($url) = $signature_agent =~ /^\s*(https?:\/\/\S+?)\s*$/
-        unless defined $url;
-    return undef unless defined $url;
+    my @urls = $signature_agent =~ /"(https?:\/\/[^"]+)"/g;
+    @urls = $signature_agent =~ /^\s*(https?:\/\/\S+?)\s*$/
+        unless @urls;
 
-    my ($host) = $url =~ m{^https?://([^/?#]+)};
-    return $host;
+    return grep { defined } map { m{^https?://([^/?#]+)} } @urls;
 }
 
 # Values from the sample file reach the terminal via print/printf below;
@@ -76,13 +74,19 @@ if ($opt{list_agents}) {
 
     while (my $line = <$fh>) {
         chomp $line;
+        $line =~ s/\r\z//;
         next if $line eq '';
 
         my $sample = eval { decode_json($line) };
-        next unless ref $sample eq 'HASH';
+        unless (ref $sample eq 'HASH') {
+            warn "replay-samples.pl: skipping unparsable line $.\n";
+            next;
+        }
 
-        my $host = agent_host($sample->{signature_agent});
-        $count{$host}++ if defined $host;
+        my %seen;
+        for my $host (agent_hosts($sample->{signature_agent})) {
+            $count{$host}++ unless $seen{$host}++;
+        }
     }
 
     close $fh;
@@ -96,10 +100,14 @@ if ($opt{list_agents}) {
 
 my ($sent, $skipped) = (0, 0);
 
-SAMPLE: while (my $line = <$fh>) {
-    chomp $line;
-    next if $line eq '';
+SAMPLE: while (1) {
     last if $opt{limit} && $sent >= $opt{limit};
+
+    my $line = <$fh>;
+    last unless defined $line;
+    chomp $line;
+    $line =~ s/\r\z//;
+    next if $line eq '';
 
     my $sample = eval { decode_json($line) };
     if (ref $sample ne 'HASH') {
@@ -108,9 +116,9 @@ SAMPLE: while (my $line = <$fh>) {
         next;
     }
 
-    unless (defined $sample->{signature} && length $sample->{signature}
+    unless (defined $sample->{signature} && $sample->{signature} =~ /\S/
             && defined $sample->{signature_input}
-            && length $sample->{signature_input}) {
+            && $sample->{signature_input} =~ /\S/) {
         $skipped++;
         next;
     }
@@ -150,13 +158,13 @@ SAMPLE: while (my $line = <$fh>) {
     push @headers, '-H', "Signature-Input: $sample->{signature_input}";
     push @headers, '-H', "Signature: $sample->{signature}";
     push @headers, '-H', "Signature-Agent: $sample->{signature_agent}"
-        if defined $sample->{signature_agent};
+        if defined $sample->{signature_agent} && length $sample->{signature_agent};
     push @headers, '-H', "User-Agent: $sample->{user_agent}"
-        if defined $sample->{user_agent};
+        if defined $sample->{user_agent} && length $sample->{user_agent};
     push @headers, '-H', "Host: $host"
-        if defined $host;
+        if defined $host && length $host;
     push @headers, '-H', 'X-Forwarded-Proto: https'
-        if defined $sample->{scheme} && $sample->{scheme} eq 'https';
+        if defined $sample->{scheme} && lc($sample->{scheme}) eq 'https';
 
     my @cmd = ('curl', '-sS', '-o', '/dev/null', '-w', '%{http_code}',
                '-X', $method, @headers, '--globoff', "$base$path");
