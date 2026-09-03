@@ -7,3 +7,6 @@
 [submodule "tests/unit/vendor/structured-field-tests"]
 	path = tests/unit/vendor/structured-field-tests
 	url = https://github.com/httpwg/structured-field-tests.git
+[submodule "nxe-phase"]
+	path = nxe-phase
+	url = https://github.com/kjdev/nxe-phase.git
