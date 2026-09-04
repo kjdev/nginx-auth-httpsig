@@ -126,6 +126,11 @@ if [ -n "${HTTPSIG_KEY_DIRECTORY_ALLOW:-}" ]; then
         directory_directives="${directory_directives}
     auth_httpsig_key_cache_max_ttl ${HTTPSIG_KEY_CACHE_MAX_TTL};"
 
+    if [ -n "${HTTPSIG_KEYID_FALLBACK_ALLOW:-}" ]; then
+        directory_directives="${directory_directives}
+    auth_httpsig_keyid_fallback_allow on;"
+    fi
+
     fetch_location="
         # Internal location dedicated to the key directory fetch. TLS
         # verification is delegated to this location.
