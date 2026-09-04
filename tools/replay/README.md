@@ -41,6 +41,13 @@ perl replay-samples.pl /path/to/samples.jsonl --list-agents
 # Register the ones you want to observe, then replay
 REPLAY_KEY_DIRECTORY_ALLOW='agent.bot.goog' docker compose up --build -d --wait proxy
 perl replay-samples.pl /path/to/samples.jsonl --target http://localhost:8082
+
+# Crawlers like agent.bot.goog, whose keyid is not a thumbprint but
+# matches the JWKS's raw kid, also need this to verify
+REPLAY_KEY_DIRECTORY_ALLOW='agent.bot.goog' \
+  REPLAY_KEYID_FALLBACK_ALLOW='on' \
+  docker compose up --build -d --wait proxy
+perl replay-samples.pl /path/to/samples.jsonl --target http://localhost:8082
 ```
 
 `--list-agents` extracts the `Signature-Agent` authorities present in the
@@ -77,6 +84,12 @@ self-declaration) and is present even on rejected requests, so it can be used
 to see who was turned away and why — e.g. `directory_not_allowed` means the
 authority isn't registered via `auth_httpsig_key_directory_allow`, not that
 the key directory fetch failed.
+
+`REPLAY_KEYID_FALLBACK_ALLOW` (passed through as `HTTPSIG_KEYID_FALLBACK_ALLOW`)
+opts in to verifying against a dynamic directory key's raw `kid`, trading
+away `keyid`'s self-certifying property. Unlike `REPLAY_MAX_SKEW`, this is
+not a replay-only relaxation — the same setting is safe to use in a live
+deployment.
 
 The full `HTTPSIG_*` environment variable reference for the `proxy` service
 is in [`docker/README.md`](../../docker/README.md).

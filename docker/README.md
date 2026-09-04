@@ -42,6 +42,7 @@ docker run --rm -p 8080:8080 \
 | `HTTPSIG_KEY_DIRECTORY_ALLOW` | — | space/comma-separated authorities; emits `auth_httpsig_key_directory_allow` per entry plus `auth_httpsig_key_cache_zone` and a `/httpsig_fetch` key-directory fetch location |
 | `HTTPSIG_KEY_CACHE_ZONE_SIZE` | `1m` | `auth_httpsig_key_cache_zone` size |
 | `HTTPSIG_KEY_CACHE_MIN_TTL` / `HTTPSIG_KEY_CACHE_MAX_TTL` | — | emitted only if set |
+| `HTTPSIG_KEYID_FALLBACK_ALLOW` | — | set to emit `auth_httpsig_keyid_fallback_allow on`; only applies to `HTTPSIG_KEY_DIRECTORY_ALLOW` keys, never `HTTPSIG_JWKS_FILE` |
 | `HTTPSIG_CA_FILE` | `/etc/ssl/certs/ca-certificates.crt` | `proxy_ssl_trusted_certificate` for the key-directory fetch |
 | `HTTPSIG_RESOLVER` | first `nameserver` in `/etc/resolv.conf` | `resolver` for the key-directory fetch |
 | `HTTPSIG_ACCESS_LOG` | `/dev/stdout` | access log destination |
