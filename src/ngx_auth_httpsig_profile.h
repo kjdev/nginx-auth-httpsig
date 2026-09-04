@@ -196,7 +196,7 @@ void ngx_auth_httpsig_profile_agent_host(ngx_pool_t *pool,
  * of a Signature-Agent field, leaving `out` empty unless a usable
  * https URL is found. See ngx_auth_httpsig_profile_agent_host() for
  * `raws` / `label`. Exposed so the key-directory fetch path can match
- * it against "auth_httpsig_trusted_agent" entries and dial it
+ * it against "auth_httpsig_key_directory_allow" entries and dial it
  * directly, both of which need the exact authority, not just the
  * hostname.
  */

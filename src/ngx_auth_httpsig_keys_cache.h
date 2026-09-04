@@ -28,7 +28,7 @@
 
 /*
  * The set of hosts a worker will ever look up is bounded by the
- * trusted-agent allowlist (ADR 0013), which operators size in the
+ * key-directory allowlist (ADR 0013), which operators size in the
  * tens of entries at most; a fixed array with linear search is
  * simpler than a tree and cheap enough at this scale.
  */
