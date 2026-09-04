@@ -33,14 +33,18 @@ typedef ngx_flag_t (*ngx_auth_httpsig_keys_has_kid_pt)(
 typedef ngx_int_t (*ngx_auth_httpsig_keys_verify_pt)(
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid,
     const ngx_str_t *msg, const ngx_str_t *sig, ngx_pool_t *pool);
+typedef ngx_int_t (*ngx_auth_httpsig_keys_verify_kid_pt)(
+    const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *kid,
+    const ngx_str_t *msg, const ngx_str_t *sig, ngx_pool_t *pool);
 typedef void (*ngx_auth_httpsig_keys_free_pt)(ngx_auth_httpsig_keys_t *keys);
 
 typedef struct {
-    ngx_str_t                         name;
-    ngx_auth_httpsig_keys_has_pt      has;
-    ngx_auth_httpsig_keys_has_kid_pt  has_kid;
-    ngx_auth_httpsig_keys_verify_pt   verify;
-    ngx_auth_httpsig_keys_free_pt     free;
+    ngx_str_t                            name;
+    ngx_auth_httpsig_keys_has_pt         has;
+    ngx_auth_httpsig_keys_has_kid_pt     has_kid;
+    ngx_auth_httpsig_keys_verify_pt      verify;
+    ngx_auth_httpsig_keys_verify_kid_pt  verify_kid;
+    ngx_auth_httpsig_keys_free_pt        free;
 } ngx_auth_httpsig_keys_source_t;
 
 struct ngx_auth_httpsig_keys_s {
@@ -91,13 +95,16 @@ ngx_flag_t ngx_auth_httpsig_keys_has(const ngx_auth_httpsig_keys_t *keys,
 
 /*
  * Reports whether `keys` holds a key whose raw JWK `kid` (not its RFC
- * 7638 thumbprint) matches `kid`. Diagnostic only: this module never
- * resolves a key by `kid` for verification, since a `kid`-keyed lookup
- * gives up the thumbprint's self-certifying property (a given keyid
- * value is guaranteed to name one specific public key). Use this only
- * to tell "keyid isn't a thumbprint of any key we hold, but matches a
- * raw kid" apart from "keyid matches nothing at all" when reporting
- * $httpsig_error. Returns 0 if `keys` or `kid` is NULL.
+ * 7638 thumbprint) matches `kid`. A `kid`-keyed lookup gives up the
+ * thumbprint's self-certifying property (a given keyid value is
+ * guaranteed to name one specific public key), so by default this is
+ * used only to tell "keyid isn't a thumbprint of any key we hold, but
+ * matches a raw kid" apart from "keyid matches nothing at all" when
+ * reporting $httpsig_error -- it does not by itself authorize
+ * verification. A caller that has opted into
+ * "auth_httpsig_keyid_fallback_allow on" may follow a positive result
+ * here with ngx_auth_httpsig_keys_verify_kid() against an explicitly
+ * scoped keyset. Returns 0 if `keys` or `kid` is NULL.
  */
 ngx_flag_t ngx_auth_httpsig_keys_has_kid(const ngx_auth_httpsig_keys_t *keys,
     const ngx_str_t *kid);
@@ -116,6 +123,23 @@ ngx_flag_t ngx_auth_httpsig_keys_has_kid(const ngx_auth_httpsig_keys_t *keys,
 ngx_int_t ngx_auth_httpsig_keys_verify(const ngx_auth_httpsig_keys_t *keys,
     const ngx_str_t *keyid, const ngx_str_t *msg, const ngx_str_t *sig,
     ngx_pool_t *pool);
+
+/*
+ * Verifies a detached signature against the key identified by raw JWK
+ * `kid` rather than an RFC 7638 thumbprint. `kid` is caller-assigned
+ * and not self-certifying, so this trades away the guarantee
+ * ngx_auth_httpsig_keys_verify() relies on; it exists only for a
+ * caller that has already scoped `keys` to a keyset whose provenance
+ * it otherwise trusts (e.g. only the dynamically fetched key
+ * directory, never a statically configured JWKS -- see
+ * "auth_httpsig_keyid_fallback_allow").
+ *
+ * Return value: same contract as ngx_auth_httpsig_keys_verify(), keyed
+ * by `kid` instead of `keyid`.
+ */
+ngx_int_t ngx_auth_httpsig_keys_verify_kid(
+    const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *kid,
+    const ngx_str_t *msg, const ngx_str_t *sig, ngx_pool_t *pool);
 
 /* Releases the keyset's underlying key material. Safe to call with
  * NULL; safe to call more than once. */

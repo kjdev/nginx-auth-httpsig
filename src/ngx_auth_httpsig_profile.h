@@ -85,11 +85,21 @@ typedef struct {
     ngx_str_t                                agent_host; /* set only once verification succeeds */
 } ngx_auth_httpsig_signature_t;
 
-/* now == 0 means "use ngx_time()"; tests inject a fixed value instead so
- * that time-window checks are deterministic. */
+/*
+ * now == 0 means "use ngx_time()"; tests inject a fixed value instead
+ * so that time-window checks are deterministic.
+ *
+ * kid_fallback_keys is NULL unless the caller opted into
+ * "auth_httpsig_keyid_fallback_allow on", in which case it is the
+ * keyset (scoped by the caller, never the static JWKS)
+ * that a keyid matching a raw JWK `kid` -- but no thumbprint -- is
+ * additionally allowed to verify against. See
+ * ngx_auth_httpsig_verify_ed25519() for the full contract.
+ */
 typedef struct {
     const ngx_auth_httpsig_profile_t *profile;
     const ngx_auth_httpsig_keys_t    *keys;
+    const ngx_auth_httpsig_keys_t    *kid_fallback_keys;
     time_t                            expires_max;
     time_t                            max_skew;
     time_t                            now;

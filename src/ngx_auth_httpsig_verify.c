@@ -44,9 +44,11 @@ ngx_int_t
 ngx_auth_httpsig_verify_ed25519(ngx_pool_t *pool,
     const ngx_auth_httpsig_keys_t *keys, const ngx_str_t *keyid,
     const ngx_str_t *base, const ngx_str_t *signature,
+    const ngx_auth_httpsig_keys_t *kid_fallback_keys,
     ngx_auth_httpsig_result_t *result)
 {
-    ngx_int_t rc;
+    ngx_int_t rc, kid_rc;
+    ngx_flag_t is_kid;
 
     if (pool == NULL || base == NULL || signature == NULL
         || result == NULL)
@@ -73,7 +75,31 @@ ngx_auth_httpsig_verify_ed25519(ngx_pool_t *pool,
      * against the operator's own published JWKS, so it does not open
      * up any distinction an attacker could not already probe for. */
     if (!ngx_auth_httpsig_keys_has(keys, keyid)) {
-        *result = ngx_auth_httpsig_keys_has_kid(keys, keyid)
+        is_kid = ngx_auth_httpsig_keys_has_kid(keys, keyid);
+
+        /* Opt-in fallback (auth_httpsig_keyid_fallback_allow on):
+         * `kid_fallback_keys` is whatever keyset the caller explicitly
+         * scoped this to (never the static JWKS), so a match here
+         * already reflects that scoping -- nothing further to check.
+         * NGX_DECLINED falls through to the same KEYID_NOT_THUMBPRINT
+         * outcome as if the fallback were disabled; any other
+         * (unexpected) return is an internal error, same as the
+         * primary verify path below. */
+        if (is_kid && kid_fallback_keys != NULL) {
+            kid_rc = ngx_auth_httpsig_keys_verify_kid(kid_fallback_keys,
+                                                      keyid, base, signature,
+                                                      pool);
+            if (kid_rc == NGX_OK) {
+                *result = NGX_AUTH_HTTPSIG_RESULT_OK;
+                return NGX_OK;
+            }
+
+            if (kid_rc != NGX_DECLINED) {
+                return NGX_ERROR;
+            }
+        }
+
+        *result = is_kid
             ? NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT
             : NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID;
         return NGX_DECLINED;

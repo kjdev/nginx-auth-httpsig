@@ -330,7 +330,8 @@ ngx_auth_httpsig_profile_verify(ngx_pool_t *pool,
 
     /* Step 14: verify. */
     rc = ngx_auth_httpsig_verify_ed25519(pool, pctx->keys, &sig->keyid, &base,
-                                         &sig->signature, result);
+                                         &sig->signature,
+                                         pctx->kid_fallback_keys, result);
     if (rc != NGX_OK) {
         return rc;
     }

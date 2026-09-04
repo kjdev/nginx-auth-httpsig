@@ -53,6 +53,7 @@ typedef struct {
                                                            * for @scheme;
                                                            * defaults to
                                                            * "scheme" */
+    ngx_flag_t                              keyid_fallback_allow;
     ngx_http_auth_httpsig_jwks_conf_t       jwks;
     ngx_http_auth_httpsig_profile_conf_t    profile;
     ngx_http_auth_httpsig_directory_conf_t  directory;
@@ -252,6 +253,14 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       ngx_http_auth_httpsig_set_key_directory_allow,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
+      NULL },
+
+    { ngx_string("auth_httpsig_keyid_fallback_allow"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, keyid_fallback_allow),
       NULL },
 
     { ngx_string("auth_httpsig_key_directory_request"),
@@ -456,6 +465,7 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
 
     conf->mode = NGX_CONF_UNSET_UINT;
     conf->scheme_index = NGX_CONF_UNSET;
+    conf->keyid_fallback_allow = NGX_CONF_UNSET;
     conf->profile.algs = NGX_CONF_UNSET_PTR;
     conf->profile.expires_max = NGX_CONF_UNSET;
     conf->profile.max_skew = NGX_CONF_UNSET;
@@ -482,6 +492,9 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode,
                               NGX_HTTP_AUTH_HTTPSIG_MODE_OFF);
+
+    ngx_conf_merge_value(conf->keyid_fallback_allow,
+                         prev->keyid_fallback_allow, 0);
 
     if (conf->scheme_index == NGX_CONF_UNSET) {
         conf->scheme_index = prev->scheme_index;
@@ -1977,6 +1990,12 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
 
     pctx.keys = ngx_auth_httpsig_keys_chain(r->pool, dynamic_keys,
                                             lcf->jwks.keys);
+
+    /* Scoped to dynamic_keys only, never lcf->jwks.keys (the static
+     * JWKS): the operator already vouches for the static JWKS's
+     * thumbprints out of band, so a non-thumbprint keyid never needs
+     * this fallback there. Left NULL unless the directive is on. */
+    pctx.kid_fallback_keys = lcf->keyid_fallback_allow ? dynamic_keys : NULL;
 
     pctx.expires_max = lcf->profile.expires_max;
     pctx.max_skew = lcf->profile.max_skew;
