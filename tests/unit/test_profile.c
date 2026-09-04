@@ -256,6 +256,7 @@ build_ctx(profile_fixture_t *fx)
 
     pctx.profile = ngx_auth_httpsig_profile_get(&name);
     pctx.keys = fx->keys;
+    pctx.kid_fallback_keys = NULL;
     pctx.expires_max = pctx.profile->expires_max;
     pctx.max_skew = pctx.profile->max_skew;
     pctx.now = TEST_NOW;

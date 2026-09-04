@@ -115,7 +115,7 @@ TEST(verify_success)
 
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_verify_ed25519(pool, keys, &thumbprint, &base,
-                                         &signature, &result));
+                                         &signature, NULL, &result));
     ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_OK, result);
 
     ngx_auth_httpsig_keys_free(keys);
@@ -141,7 +141,7 @@ TEST(verify_tampered_signature_is_mismatch)
 
     ASSERT_EQ_INT(NGX_DECLINED,
         ngx_auth_httpsig_verify_ed25519(pool, keys, &thumbprint, &base,
-                                         &signature, &result));
+                                         &signature, NULL, &result));
     ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_SIGNATURE_MISMATCH, result);
 
     ngx_auth_httpsig_keys_free(keys);
@@ -167,7 +167,7 @@ TEST(verify_unknown_keyid)
 
     ASSERT_EQ_INT(NGX_DECLINED,
         ngx_auth_httpsig_verify_ed25519(pool, keys, &unknown, &base,
-                                         &signature, &result));
+                                         &signature, NULL, &result));
     ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_UNKNOWN_KEYID, result);
 
     ngx_auth_httpsig_keys_free(keys);
@@ -194,11 +194,77 @@ TEST(verify_non_thumbprint_keyid_reports_kid_label)
 
     ASSERT_EQ_INT(NGX_DECLINED,
         ngx_auth_httpsig_verify_ed25519(pool, keys, &kid, &base,
-                                         &signature, &result));
+                                         &signature, NULL, &result));
     ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT, result);
 
     ngx_auth_httpsig_keys_free(keys);
     EVP_PKEY_free(pkey);
+
+    return 0;
+}
+
+
+TEST(verify_non_thumbprint_keyid_fallback_allowed_verifies)
+{
+    ngx_auth_httpsig_keys_t   *keys;
+    ngx_str_t                  base, thumbprint, signature, kid;
+    EVP_PKEY                  *pkey;
+    ngx_auth_httpsig_result_t  result;
+
+    base = str("this is the signature base string");
+
+    ASSERT_EQ_INT(NGX_OK,
+        build_fixture_kid(pool, &base, "short-label", &keys, &thumbprint,
+                           &signature, &pkey));
+
+    kid = str("short-label");
+
+    /* kid_fallback_keys == keys: the caller has scoped the fallback to
+     * the same (dynamic) keyset that failed the thumbprint lookup, so
+     * the raw-kid match is allowed to verify. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_verify_ed25519(pool, keys, &kid, &base,
+                                         &signature, keys, &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_OK, result);
+
+    ngx_auth_httpsig_keys_free(keys);
+    EVP_PKEY_free(pkey);
+
+    return 0;
+}
+
+
+TEST(verify_non_thumbprint_keyid_fallback_scoped_to_other_keys_fails)
+{
+    ngx_auth_httpsig_keys_t   *keys, *other_keys;
+    ngx_str_t                  base, thumbprint, signature, other_thumbprint,
+                                other_signature, kid;
+    EVP_PKEY                  *pkey, *other_pkey;
+    ngx_auth_httpsig_result_t  result;
+
+    base = str("this is the signature base string");
+
+    ASSERT_EQ_INT(NGX_OK,
+        build_fixture_kid(pool, &base, "short-label", &keys, &thumbprint,
+                           &signature, &pkey));
+    ASSERT_EQ_INT(NGX_OK,
+        build_fixture_kid(pool, &base, "other-label", &other_keys,
+                           &other_thumbprint, &other_signature, &other_pkey));
+
+    kid = str("short-label");
+
+    /* kid_fallback_keys == other_keys: a raw kid present only in `keys`
+     * must not verify against a fallback keyset it was never scoped
+     * to, even though that keyset also lacks a thumbprint match. */
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_verify_ed25519(pool, keys, &kid, &base,
+                                         &signature, other_keys, &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_KEYID_NOT_THUMBPRINT, result);
+
+    ngx_auth_httpsig_keys_free(keys);
+    ngx_auth_httpsig_keys_free(other_keys);
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_free(other_pkey);
 
     return 0;
 }
@@ -221,7 +287,7 @@ TEST(verify_wrong_signature_length)
 
     ASSERT_EQ_INT(NGX_DECLINED,
         ngx_auth_httpsig_verify_ed25519(pool, keys, &thumbprint, &base,
-                                         &truncated, &result));
+                                         &truncated, NULL, &result));
     ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_SIGNATURE_MISMATCH, result);
 
     ngx_auth_httpsig_keys_free(keys);
@@ -237,5 +303,7 @@ TEST_SUITE(verify)
     RUN(verify_tampered_signature_is_mismatch);
     RUN(verify_unknown_keyid);
     RUN(verify_non_thumbprint_keyid_reports_kid_label);
+    RUN(verify_non_thumbprint_keyid_fallback_allowed_verifies);
+    RUN(verify_non_thumbprint_keyid_fallback_scoped_to_other_keys_fails);
     RUN(verify_wrong_signature_length);
 }
