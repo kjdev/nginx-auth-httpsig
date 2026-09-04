@@ -154,7 +154,8 @@ log_format httpsig_observe
     '\$remote_addr - \$remote_user [\$time_local] '
     '"\$request" \$status \$body_bytes_sent '
     'verified="\$httpsig_verified" keyid="\$httpsig_keyid" '
-    'agent="\$httpsig_agent" error="\$httpsig_error"';
+    'agent="\$httpsig_agent" claimed_agent="\$http_signature_agent" '
+    'error="\$httpsig_error"';
 
 ${cache_zone_directive}
 ${scheme_map_directive}

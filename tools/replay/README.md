@@ -60,17 +60,23 @@ authority's key directory — there's no local agent standing in for it.
 
 ## Reading the results
 
-Aggregate the proxy's access log by `verified` × `agent` × `error`:
+Aggregate the proxy's access log by `verified` × `agent` × `claimed_agent` ×
+`error`:
 
 ```sh
 docker compose logs proxy \
   | grep -oP 'verified="[^"]*".*error="[^"]*"' \
-  | sed -E 's/ keyid="[^"]*"//' \
+  | sed -E 's/ keyid="[^"]*"//; s/\\x22//g' \
   | sort | uniq -c | sort -rn
 ```
 
 `agent="..."` stays `-` unless verification fully succeeds, since
 `$httpsig_agent` is only populated once verification completes.
+`claimed_agent="..."` is the raw `Signature-Agent` header value (unverified
+self-declaration) and is present even on rejected requests, so it can be used
+to see who was turned away and why — e.g. `directory_not_allowed` means the
+authority isn't registered via `auth_httpsig_trusted_agent`, not that the key
+directory fetch failed.
 
 The full `HTTPSIG_*` environment variable reference for the `proxy` service
 is in [`docker/README.md`](../../docker/README.md).
