@@ -11,7 +11,7 @@ services:
 
   # Standalone-proxy target (root Dockerfile) configured entirely through
   # HTTPSIG_* env vars, dedicated to replaying real crawler traffic.
-  # HTTPSIG_TRUSTED_AGENTS / HTTPSIG_MAX_SKEW are left wide open for this
+  # HTTPSIG_KEY_DIRECTORY_ALLOW / HTTPSIG_MAX_SKEW are left wide open for this
   # purpose and must never be set that way in a live deployment. No
   # HTTPSIG_CA_FILE: real crawler key directories are verified against the
   # system CA bundle.
@@ -27,7 +27,7 @@ services:
     environment:
       HTTPSIG_UPSTREAM: http://backend:80
       HTTPSIG_UPSTREAM_ALLOW_INSECURE: "1"
-      HTTPSIG_TRUSTED_AGENTS: ${REPLAY_TRUSTED_AGENTS:-}
+      HTTPSIG_KEY_DIRECTORY_ALLOW: ${REPLAY_KEY_DIRECTORY_ALLOW:-}
       HTTPSIG_MAX_SKEW: ${REPLAY_MAX_SKEW:-365d}
       HTTPSIG_TRUST_X_FORWARDED_PROTO: "1"
     ports:

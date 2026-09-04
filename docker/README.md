@@ -22,7 +22,7 @@ docker build --target proxy  -t httpsig-proxy  .
 docker run --rm -p 8080:8080 \
   -e HTTPSIG_UPSTREAM=http://backend.internal:80 \
   -e HTTPSIG_UPSTREAM_ALLOW_INSECURE=1 \
-  -e HTTPSIG_TRUSTED_AGENTS='agent.bot.example crawler.bot.example' \
+  -e HTTPSIG_KEY_DIRECTORY_ALLOW='agent.bot.example crawler.bot.example' \
   httpsig-proxy
 ```
 
@@ -39,15 +39,16 @@ docker run --rm -p 8080:8080 \
 | `HTTPSIG_PROFILE` | `web-bot-auth` | `auth_httpsig_profile` |
 | `HTTPSIG_MAX_SKEW` / `HTTPSIG_EXPIRES_MAX` | profile default | `auth_httpsig_max_skew` / `auth_httpsig_expires_max`; emitted only if set |
 | `HTTPSIG_JWKS_FILE` | — | `auth_httpsig_jwks_file` (static key source) |
-| `HTTPSIG_TRUSTED_AGENTS` | — | space/comma-separated authorities; emits `auth_httpsig_trusted_agent` per entry plus `auth_httpsig_key_cache_zone` and a `/httpsig_fetch` key-directory fetch location |
+| `HTTPSIG_KEY_DIRECTORY_ALLOW` | — | space/comma-separated authorities; emits `auth_httpsig_key_directory_allow` per entry plus `auth_httpsig_key_cache_zone` and a `/httpsig_fetch` key-directory fetch location |
 | `HTTPSIG_KEY_CACHE_ZONE_SIZE` | `1m` | `auth_httpsig_key_cache_zone` size |
 | `HTTPSIG_KEY_CACHE_MIN_TTL` / `HTTPSIG_KEY_CACHE_MAX_TTL` | — | emitted only if set |
 | `HTTPSIG_CA_FILE` | `/etc/ssl/certs/ca-certificates.crt` | `proxy_ssl_trusted_certificate` for the key-directory fetch |
 | `HTTPSIG_RESOLVER` | first `nameserver` in `/etc/resolv.conf` | `resolver` for the key-directory fetch |
 | `HTTPSIG_ACCESS_LOG` | `/dev/stdout` | access log destination |
 
-At least one of `HTTPSIG_JWKS_FILE` or `HTTPSIG_TRUSTED_AGENTS` is required;
-the entrypoint exits with an error before nginx starts if neither is set.
+At least one of `HTTPSIG_JWKS_FILE` or `HTTPSIG_KEY_DIRECTORY_ALLOW` is
+required; the entrypoint exits with an error before nginx starts if neither
+is set.
 
 ### Verification result headers sent upstream
 

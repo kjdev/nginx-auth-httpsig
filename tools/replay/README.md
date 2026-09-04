@@ -39,7 +39,7 @@ docker compose up --build -d backend
 perl replay-samples.pl /path/to/samples.jsonl --list-agents
 
 # Register the ones you want to observe, then replay
-REPLAY_TRUSTED_AGENTS='agent.bot.goog' docker compose up --build -d --wait proxy
+REPLAY_KEY_DIRECTORY_ALLOW='agent.bot.goog' docker compose up --build -d --wait proxy
 perl replay-samples.pl /path/to/samples.jsonl --target http://localhost:8082
 ```
 
@@ -47,8 +47,8 @@ perl replay-samples.pl /path/to/samples.jsonl --target http://localhost:8082
 sample file, without sending any requests, so they can be reviewed before
 registering them.
 
-`REPLAY_TRUSTED_AGENTS` is **not** auto-populated from `--list-agents` — you
-choose which real crawlers to trust. `REPLAY_MAX_SKEW` (default `365d`)
+`REPLAY_KEY_DIRECTORY_ALLOW` is **not** auto-populated from `--list-agents`
+— you choose which real crawlers to trust. `REPLAY_MAX_SKEW` (default `365d`)
 widens `auth_httpsig_max_skew` far enough to accept a sample's original
 `created`/`expires` despite the time elapsed since capture; this is only
 safe for this kind of offline replay, never for a live deployment.
@@ -75,8 +75,8 @@ docker compose logs proxy \
 `claimed_agent="..."` is the raw `Signature-Agent` header value (unverified
 self-declaration) and is present even on rejected requests, so it can be used
 to see who was turned away and why — e.g. `directory_not_allowed` means the
-authority isn't registered via `auth_httpsig_trusted_agent`, not that the key
-directory fetch failed.
+authority isn't registered via `auth_httpsig_key_directory_allow`, not that
+the key directory fetch failed.
 
 The full `HTTPSIG_*` environment variable reference for the `proxy` service
 is in [`docker/README.md`](../../docker/README.md).

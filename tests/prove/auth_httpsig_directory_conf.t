@@ -17,7 +17,7 @@ __DATA__
     auth_httpsig_key_cache_zone  httpsig_keys:1m;
 --- config
     auth_httpsig_mode                   observe;
-    auth_httpsig_trusted_agent          bot.example.com;
+    auth_httpsig_key_directory_allow    bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -26,10 +26,10 @@ __DATA__
 
     location = /httpsig_fetch {
         internal;
-        auth_httpsig_mode              off;
-        auth_httpsig_trusted_agent     off;
-        resolver                       1.1.1.1;
-        subrequest_output_buffer_size  128k;
+        auth_httpsig_mode                 off;
+        auth_httpsig_key_directory_allow  off;
+        resolver                          1.1.1.1;
+        subrequest_output_buffer_size     128k;
         proxy_ssl_verify                on;
         proxy_ssl_trusted_certificate   $TEST_NGINX_DATA_DIR/directory-cert.pem;
         proxy_ssl_server_name           on;
@@ -52,7 +52,7 @@ ok
     auth_httpsig_key_cache_zone  httpsig_keys:1m;
 --- config
     auth_httpsig_mode                   observe;
-    auth_httpsig_trusted_agent          bot.example.com;
+    auth_httpsig_key_directory_allow    bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -62,9 +62,9 @@ ok
 
     location = /httpsig_fetch {
         internal;
-        auth_httpsig_mode           off;
-        auth_httpsig_trusted_agent  off;
-        resolver                    1.1.1.1;
+        auth_httpsig_mode                 off;
+        auth_httpsig_key_directory_allow  off;
+        resolver                          1.1.1.1;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
 --- more_headers eval
@@ -105,7 +105,7 @@ X-Httpsig-Verified: 1
     auth_httpsig_key_cache_zone  httpsig_keys:1m;
 --- config
     auth_httpsig_mode                   observe;
-    auth_httpsig_trusted_agent          bot.example.com;
+    auth_httpsig_key_directory_allow    bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -114,9 +114,9 @@ X-Httpsig-Verified: 1
 
     location = /httpsig_fetch {
         internal;
-        auth_httpsig_mode           off;
-        auth_httpsig_trusted_agent  off;
-        resolver                    1.1.1.1;
+        auth_httpsig_mode                 off;
+        auth_httpsig_key_directory_allow  off;
+        resolver                          1.1.1.1;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
 --- request
@@ -125,29 +125,29 @@ GET /t
 
 
 
-=== TEST 4: a scheme-prefixed trusted_agent host is rejected
+=== TEST 4: a scheme-prefixed key_directory_allow host is rejected
 --- config
-    auth_httpsig_trusted_agent  https://bot.example.com;
+    auth_httpsig_key_directory_allow  https://bot.example.com;
 
     location /t {
         return 200;
     }
 --- must_die
 --- error_log
-invalid host "https://bot.example.com" in "auth_httpsig_trusted_agent"
+invalid host "https://bot.example.com" in "auth_httpsig_key_directory_allow"
 
 
 
-=== TEST 5: a wildcard trusted_agent host is rejected
+=== TEST 5: a wildcard key_directory_allow host is rejected
 --- config
-    auth_httpsig_trusted_agent  *.example.com;
+    auth_httpsig_key_directory_allow  *.example.com;
 
     location /t {
         return 200;
     }
 --- must_die
 --- error_log
-invalid host "*.example.com" in "auth_httpsig_trusted_agent"
+invalid host "*.example.com" in "auth_httpsig_key_directory_allow"
 
 
 
@@ -243,22 +243,22 @@ zone "httpsig_keys:1k" is too small
 
 
 
-=== TEST 13: a trusted_agent without a key_directory_request is rejected
+=== TEST 13: a key_directory_allow without a key_directory_request is rejected
 --- config
-    auth_httpsig_trusted_agent  bot.example.com;
+    auth_httpsig_key_directory_allow  bot.example.com;
 
     location /t {
         return 200;
     }
 --- must_die
 --- error_log
-"auth_httpsig_trusted_agent" is set but no "auth_httpsig_key_directory_request" is configured
+"auth_httpsig_key_directory_allow" is set but no "auth_httpsig_key_directory_request" is configured
 
 
 
-=== TEST 14: a trusted_agent and key_directory_request without a key_cache_zone is rejected
+=== TEST 14: a key_directory_allow and key_directory_request without a key_cache_zone is rejected
 --- config
-    auth_httpsig_trusted_agent          bot.example.com;
+    auth_httpsig_key_directory_allow    bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -266,7 +266,7 @@ zone "httpsig_keys:1k" is too small
     }
 --- must_die
 --- error_log
-"auth_httpsig_trusted_agent" is set but no "auth_httpsig_key_cache_zone" is configured
+"auth_httpsig_key_directory_allow" is set but no "auth_httpsig_key_cache_zone" is configured
 
 
 

@@ -21,7 +21,7 @@ repeat_each(1);
 no_long_string();
 
 # Mock key-directory origins. Each gets its own loopback port (rather than
-# SNI-based virtual hosting on one port) because the trusted-agent host is a
+# SNI-based virtual hosting on one port) because the key-directory-allow host is a
 # literal IP:port -- normalize_host()/allowed() never invoke the resolver,
 # so a symbolic server_name would need real DNS to reach the same origin.
 our $HttpConfig = <<'_EOC_';
@@ -219,7 +219,7 @@ _EOC_
 # directory-ok; what varies between scenarios is which of these get a
 # Signature-Agent Dictionary entry pointing at them, and whether that entry
 # is the one a verifier should actually pick. Ports that a scenario expects
-# to NOT be fetched are still declared here (and trusted-agent-listed below)
+# to NOT be fetched are still declared here (and allow-listed below)
 # so that a wrong-entry-selection bug would show up as a spurious fetch log
 # line instead of being masked behind an unrelated allowlist rejection.
 $HttpConfig .= <<'_EOC_';
@@ -362,7 +362,7 @@ _EOC_
 our $MainConfig = <<'_EOC_';
     auth_httpsig_mode                   observe;
     auth_httpsig_key_directory_request  /httpsig_fetch;
-    auth_httpsig_trusted_agent
+    auth_httpsig_key_directory_allow
         127.0.0.1:18443
         127.0.0.1:18444
         127.0.0.1:18445
@@ -390,10 +390,10 @@ our $MainConfig = <<'_EOC_';
 
     location = /httpsig_fetch {
         internal;
-        auth_httpsig_mode              off;
-        auth_httpsig_trusted_agent     off;
-        resolver                       1.1.1.1;
-        subrequest_output_buffer_size  128k;
+        auth_httpsig_mode                 off;
+        auth_httpsig_key_directory_allow  off;
+        resolver                          1.1.1.1;
+        subrequest_output_buffer_size     128k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
         proxy_ssl_name                  $httpsig_directory_host;
@@ -420,7 +420,7 @@ _EOC_
 our $SmallBufferConfig = <<'_EOC_';
     auth_httpsig_mode                   observe;
     auth_httpsig_key_directory_request  /httpsig_fetch;
-    auth_httpsig_trusted_agent
+    auth_httpsig_key_directory_allow
         127.0.0.1:18443
         127.0.0.1:18444
         127.0.0.1:18445
@@ -439,10 +439,10 @@ our $SmallBufferConfig = <<'_EOC_';
 
     location = /httpsig_fetch {
         internal;
-        auth_httpsig_mode              off;
-        auth_httpsig_trusted_agent     off;
-        resolver                       1.1.1.1;
-        subrequest_output_buffer_size  1k;
+        auth_httpsig_mode                 off;
+        auth_httpsig_key_directory_allow  off;
+        resolver                          1.1.1.1;
+        subrequest_output_buffer_size     1k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
         proxy_ssl_name                  $httpsig_directory_host;
@@ -461,7 +461,7 @@ _EOC_
 our $LocScopeConfig = <<'_EOC_';
     auth_httpsig_mode                   observe;
     auth_httpsig_key_directory_request  /httpsig_fetch;
-    auth_httpsig_trusted_agent
+    auth_httpsig_key_directory_allow
         127.0.0.1:18452
         127.0.0.1:18453;
 
@@ -485,10 +485,10 @@ our $LocScopeConfig = <<'_EOC_';
 
     location = /httpsig_fetch {
         internal;
-        auth_httpsig_mode              off;
-        auth_httpsig_trusted_agent     off;
-        resolver                       1.1.1.1;
-        subrequest_output_buffer_size  128k;
+        auth_httpsig_mode                 off;
+        auth_httpsig_key_directory_allow  off;
+        resolver                          1.1.1.1;
+        subrequest_output_buffer_size     128k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
         proxy_ssl_name                  $httpsig_directory_host;
@@ -579,7 +579,7 @@ verified:1 error:
 
 
 
-=== TEST 3: a host outside the trusted-agent allowlist is never fetched
+=== TEST 3: a host outside the key_directory_allow list is never fetched
 --- http_config eval: $::HttpConfig
 --- config eval: $::MainConfig
 --- more_headers eval
