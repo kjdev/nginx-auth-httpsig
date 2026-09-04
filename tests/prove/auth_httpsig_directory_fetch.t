@@ -357,6 +357,26 @@ $HttpConfig .= <<'_EOC_';
             return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
         }
     }
+
+    # Same key material as directory-ok, but kid is the raw JWKS label
+    # "mhxuPw" instead of its RFC 7638 thumbprint -- used to exercise
+    # auth_httpsig_keyid_fallback_allow against a dynamically fetched key
+    # set (the fallback never applies to the static auth_httpsig_jwks_file
+    # case covered by auth_httpsig_error.t TEST 3b).
+    server {
+        listen  127.0.0.1:18463 ssl;
+        server_name  directory-shortkid;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"mhxuPw"}]}';
+        }
+    }
 _EOC_
 
 our $MainConfig = <<'_EOC_';
@@ -489,6 +509,48 @@ our $LocScopeConfig = <<'_EOC_';
         auth_httpsig_key_directory_allow  off;
         resolver                          1.1.1.1;
         subrequest_output_buffer_size     128k;
+        proxy_ssl_verify                off;
+        proxy_ssl_server_name           on;
+        proxy_ssl_name                  $httpsig_directory_host;
+        proxy_set_header                Host $httpsig_directory_host;
+        proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
+    }
+_EOC_
+
+# Same shape as $MainConfig, but scoped to the "directory-shortkid" origin
+# only, with two locations differing solely in whether
+# auth_httpsig_keyid_fallback_allow is set -- isolates the fallback
+# directive as the only variable between a verified:1 and a
+# verified:0/keyid_not_thumbprint outcome for the same signed request.
+our $FallbackConfig = <<'_EOC_';
+    auth_httpsig_mode                   observe;
+    auth_httpsig_key_directory_request  /httpsig_fetch;
+    auth_httpsig_key_directory_allow
+        127.0.0.1:18463;
+
+    location /t_fallback_on {
+        default_type       text/plain;
+        sub_filter_types    text/plain;
+        sub_filter          'RESPONSE_MARKER'  'verified:$httpsig_verified error:$httpsig_error';
+        sub_filter_once      on;
+        auth_httpsig_keyid_fallback_allow  on;
+        proxy_pass  http://127.0.0.1:18449/marker;
+    }
+
+    location /t_fallback_off {
+        default_type       text/plain;
+        sub_filter_types    text/plain;
+        sub_filter          'RESPONSE_MARKER'  'verified:$httpsig_verified error:$httpsig_error';
+        sub_filter_once      on;
+        proxy_pass  http://127.0.0.1:18449/marker;
+    }
+
+    location = /httpsig_fetch {
+        internal;
+        auth_httpsig_mode              off;
+        auth_httpsig_key_directory_allow     off;
+        resolver                       1.1.1.1;
+        subrequest_output_buffer_size  128k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
         proxy_ssl_name                  $httpsig_directory_host;
@@ -957,3 +1019,31 @@ GET /t
 verified: error:
 --- grep_error_log eval: qr/18462 GET \/\.well-known\/http-message-signatures-directory\S*/
 --- grep_error_log_out
+
+
+
+=== TEST 27: a non-thumbprint keyid matching a dynamically fetched key's raw kid verifies when auth_httpsig_keyid_fallback_allow is set
+--- http_config eval: $::HttpConfig
+--- config eval: $::FallbackConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18463', '/t_fallback_on', 'tests/prove/data/ed25519-key.pem', 'mhxuPw')
+--- request
+GET /t_fallback_on
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+
+
+
+=== TEST 28: the same non-thumbprint keyid stays unverified when auth_httpsig_keyid_fallback_allow is not set
+--- http_config eval: $::HttpConfig
+--- config eval: $::FallbackConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18463', '/t_fallback_off', 'tests/prove/data/ed25519-key.pem', 'mhxuPw')
+--- request
+GET /t_fallback_off
+--- error_code: 200
+--- response_body chomp
+verified:0 error:keyid_not_thumbprint
