@@ -66,7 +66,7 @@ Aggregate the proxy's access log by `verified` × `agent` × `claimed_agent` ×
 ```sh
 docker compose logs proxy \
   | grep -oP 'verified="[^"]*".*error="[^"]*"' \
-  | sed -E 's/ keyid="[^"]*"//; s/\\x22//g' \
+  | sed -E 's/ keyid="[^"]*"//' \
   | sort | uniq -c | sort -rn
 ```
 
