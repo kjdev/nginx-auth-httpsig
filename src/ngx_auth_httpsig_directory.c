@@ -466,7 +466,7 @@ ngx_auth_httpsig_directory_reason_name(ngx_auth_httpsig_fetch_reason_t reason)
     case NGX_AUTH_HTTPSIG_FETCH_EMPTY:
         return "directory_empty";
     case NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED:
-        return "directory_not_allowed";
+        return "agent_not_allowed";
     case NGX_AUTH_HTTPSIG_FETCH_BUSY:
         return "directory_busy";
     case NGX_AUTH_HTTPSIG_FETCH_UNAVAILABLE:

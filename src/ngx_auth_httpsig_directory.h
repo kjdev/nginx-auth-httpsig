@@ -134,9 +134,12 @@ ngx_int_t ngx_auth_httpsig_directory_check_response(const ngx_str_t *schema,
 
 /*
  * Static string, safe to log or expose as $httpsig_error; never derived
- * from a request. Returns the full "directory_*" token (e.g.
- * "directory_not_allowed"), not a bare suffix, since the caller does
- * not concatenate a prefix onto it.
+ * from a request. Returns the full token (e.g. "directory_too_large"),
+ * not a bare suffix, since the caller does not concatenate a prefix
+ * onto it. NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED is the one exception to
+ * the "directory_*" naming: it never reaches a fetch attempt, so it is
+ * named "agent_not_allowed" to match auth_httpsig_agent_allow rather
+ * than implying a fetch was tried and rejected.
  */
 const char *ngx_auth_httpsig_directory_reason_name(
     ngx_auth_httpsig_fetch_reason_t reason);
