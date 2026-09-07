@@ -39,12 +39,12 @@ docker compose up --build -d backend
 perl replay-samples.pl /path/to/samples.jsonl --list-agents
 
 # Register the ones you want to observe, then replay
-REPLAY_KEY_DIRECTORY_ALLOW='agent.bot.goog' docker compose up --build -d --wait proxy
+REPLAY_AGENT_ALLOW='agent.bot.goog' docker compose up --build -d --wait proxy
 perl replay-samples.pl /path/to/samples.jsonl --target http://localhost:8082
 
 # Crawlers like agent.bot.goog, whose keyid is not a thumbprint but
 # matches the JWKS's raw kid, also need this to verify
-REPLAY_KEY_DIRECTORY_ALLOW='agent.bot.goog' \
+REPLAY_AGENT_ALLOW='agent.bot.goog' \
   REPLAY_KEYID_FALLBACK_ALLOW='on' \
   docker compose up --build -d --wait proxy
 perl replay-samples.pl /path/to/samples.jsonl --target http://localhost:8082
@@ -54,7 +54,7 @@ perl replay-samples.pl /path/to/samples.jsonl --target http://localhost:8082
 sample file, without sending any requests, so they can be reviewed before
 registering them.
 
-`REPLAY_KEY_DIRECTORY_ALLOW` is **not** auto-populated from `--list-agents`
+`REPLAY_AGENT_ALLOW` is **not** auto-populated from `--list-agents`
 — you choose which real crawlers to trust. `REPLAY_MAX_SKEW` (default `365d`)
 widens `auth_httpsig_max_skew` far enough to accept a sample's original
 `created`/`expires` despite the time elapsed since capture; this is only
@@ -82,7 +82,7 @@ docker compose logs proxy \
 `claimed_agent="..."` is the raw `Signature-Agent` header value (unverified
 self-declaration) and is present even on rejected requests, so it can be used
 to see who was turned away and why — e.g. `directory_not_allowed` means the
-authority isn't registered via `auth_httpsig_key_directory_allow`, not that
+authority isn't registered via `auth_httpsig_agent_allow`, not that
 the key directory fetch failed.
 
 `REPLAY_KEYID_FALLBACK_ALLOW` (passed through as `HTTPSIG_KEYID_FALLBACK_ALLOW`)
