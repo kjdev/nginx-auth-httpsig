@@ -13,8 +13,8 @@
 #
 # --list-agents extracts the Signature-Agent authorities present in the
 # sample file (sending no requests) so they can be reviewed before
-# registering any of them as auth_httpsig_key_directory_allow /
-# HTTPSIG_KEY_DIRECTORY_ALLOW.
+# registering any of them as auth_httpsig_agent_allow /
+# HTTPSIG_AGENT_ALLOW.
 use strict;
 use warnings;
 
