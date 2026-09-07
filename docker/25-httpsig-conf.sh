@@ -55,8 +55,8 @@ case "$HTTPSIG_UPSTREAM" in
         ;;
 esac
 
-if [ -z "${HTTPSIG_JWKS_FILE:-}" ] && [ -z "${HTTPSIG_KEY_DIRECTORY_ALLOW:-}" ]; then
-    echo "$ME: set HTTPSIG_JWKS_FILE or HTTPSIG_KEY_DIRECTORY_ALLOW; auth_httpsig needs a key source" >&2
+if [ -z "${HTTPSIG_JWKS_FILE:-}" ] && [ -z "${HTTPSIG_AGENT_ALLOW:-}" ]; then
+    echo "$ME: set HTTPSIG_JWKS_FILE or HTTPSIG_AGENT_ALLOW; auth_httpsig needs a key source" >&2
     exit 1
 fi
 
@@ -109,12 +109,12 @@ cache_zone_directive=""
 directory_directives=""
 fetch_location=""
 
-if [ -n "${HTTPSIG_KEY_DIRECTORY_ALLOW:-}" ]; then
+if [ -n "${HTTPSIG_AGENT_ALLOW:-}" ]; then
     cache_size=${HTTPSIG_KEY_CACHE_ZONE_SIZE:-1m}
     cache_zone_directive="auth_httpsig_key_cache_zone httpsig_keys:${cache_size};"
 
-    for agent in $(echo "$HTTPSIG_KEY_DIRECTORY_ALLOW" | tr ',' ' '); do
-        directory_directives="${directory_directives}    auth_httpsig_key_directory_allow ${agent};
+    for agent in $(echo "$HTTPSIG_AGENT_ALLOW" | tr ',' ' '); do
+        directory_directives="${directory_directives}    auth_httpsig_agent_allow ${agent};
 "
     done
     directory_directives="${directory_directives}    auth_httpsig_key_directory_request /httpsig_fetch;"
@@ -138,7 +138,7 @@ if [ -n "${HTTPSIG_KEY_DIRECTORY_ALLOW:-}" ]; then
             internal;
 
             auth_httpsig_mode                 off;
-            auth_httpsig_key_directory_allow  off;
+            auth_httpsig_agent_allow          off;
 
             resolver                        ${resolver};
             subrequest_output_buffer_size   128k;
