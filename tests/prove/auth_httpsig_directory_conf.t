@@ -17,7 +17,7 @@ __DATA__
     auth_httpsig_key_cache_zone  httpsig_keys:1m;
 --- config
     auth_httpsig_mode                   observe;
-    auth_httpsig_key_directory_allow    bot.example.com;
+    auth_httpsig_agent_allow            bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -27,7 +27,7 @@ __DATA__
     location = /httpsig_fetch {
         internal;
         auth_httpsig_mode                 off;
-        auth_httpsig_key_directory_allow  off;
+        auth_httpsig_agent_allow          off;
         resolver                          1.1.1.1;
         subrequest_output_buffer_size     128k;
         proxy_ssl_verify                on;
@@ -52,7 +52,7 @@ ok
     auth_httpsig_key_cache_zone  httpsig_keys:1m;
 --- config
     auth_httpsig_mode                   observe;
-    auth_httpsig_key_directory_allow    bot.example.com;
+    auth_httpsig_agent_allow            bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -63,7 +63,7 @@ ok
     location = /httpsig_fetch {
         internal;
         auth_httpsig_mode                 off;
-        auth_httpsig_key_directory_allow  off;
+        auth_httpsig_agent_allow          off;
         resolver                          1.1.1.1;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
@@ -105,7 +105,7 @@ X-Httpsig-Verified: 1
     auth_httpsig_key_cache_zone  httpsig_keys:1m;
 --- config
     auth_httpsig_mode                   observe;
-    auth_httpsig_key_directory_allow    bot.example.com;
+    auth_httpsig_agent_allow            bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -115,7 +115,7 @@ X-Httpsig-Verified: 1
     location = /httpsig_fetch {
         internal;
         auth_httpsig_mode                 off;
-        auth_httpsig_key_directory_allow  off;
+        auth_httpsig_agent_allow          off;
         resolver                          1.1.1.1;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
@@ -125,29 +125,29 @@ GET /t
 
 
 
-=== TEST 4: a scheme-prefixed key_directory_allow host is rejected
+=== TEST 4: a scheme-prefixed agent_allow host is rejected
 --- config
-    auth_httpsig_key_directory_allow  https://bot.example.com;
+    auth_httpsig_agent_allow  https://bot.example.com;
 
     location /t {
         return 200;
     }
 --- must_die
 --- error_log
-invalid host "https://bot.example.com" in "auth_httpsig_key_directory_allow"
+invalid host "https://bot.example.com" in "auth_httpsig_agent_allow"
 
 
 
-=== TEST 5: a wildcard key_directory_allow host is rejected
+=== TEST 5: a wildcard agent_allow host is rejected
 --- config
-    auth_httpsig_key_directory_allow  *.example.com;
+    auth_httpsig_agent_allow  *.example.com;
 
     location /t {
         return 200;
     }
 --- must_die
 --- error_log
-invalid host "*.example.com" in "auth_httpsig_key_directory_allow"
+invalid host "*.example.com" in "auth_httpsig_agent_allow"
 
 
 
@@ -243,22 +243,22 @@ zone "httpsig_keys:1k" is too small
 
 
 
-=== TEST 13: a key_directory_allow without a key_directory_request is rejected
+=== TEST 13: an agent_allow without a key_directory_request is rejected
 --- config
-    auth_httpsig_key_directory_allow  bot.example.com;
+    auth_httpsig_agent_allow  bot.example.com;
 
     location /t {
         return 200;
     }
 --- must_die
 --- error_log
-"auth_httpsig_key_directory_allow" is set but no "auth_httpsig_key_directory_request" is configured
+"auth_httpsig_agent_allow" is set but no "auth_httpsig_key_directory_request" is configured
 
 
 
-=== TEST 14: a key_directory_allow and key_directory_request without a key_cache_zone is rejected
+=== TEST 14: an agent_allow and key_directory_request without a key_cache_zone is rejected
 --- config
-    auth_httpsig_key_directory_allow    bot.example.com;
+    auth_httpsig_agent_allow            bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -266,7 +266,7 @@ zone "httpsig_keys:1k" is too small
     }
 --- must_die
 --- error_log
-"auth_httpsig_key_directory_allow" is set but no "auth_httpsig_key_cache_zone" is configured
+"auth_httpsig_agent_allow" is set but no "auth_httpsig_key_cache_zone" is configured
 
 
 

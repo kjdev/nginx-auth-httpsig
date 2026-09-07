@@ -324,7 +324,7 @@ verified=[0] error=[parse_error]
     }
 --- config
     auth_httpsig_mode                   observe;
-    auth_httpsig_key_directory_allow    bot.example.com;
+    auth_httpsig_agent_allow            bot.example.com;
     auth_httpsig_key_directory_request  /httpsig_fetch;
 
     location /t {
@@ -338,7 +338,7 @@ verified=[0] error=[parse_error]
     location = /httpsig_fetch {
         internal;
         auth_httpsig_mode                 off;
-        auth_httpsig_key_directory_allow  off;
+        auth_httpsig_agent_allow          off;
         resolver                          1.1.1.1;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
