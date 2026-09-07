@@ -81,7 +81,7 @@ docker compose logs proxy \
 `$httpsig_agent` is only populated once verification completes.
 `claimed_agent="..."` is the raw `Signature-Agent` header value (unverified
 self-declaration) and is present even on rejected requests, so it can be used
-to see who was turned away and why — e.g. `directory_not_allowed` means the
+to see who was turned away and why — e.g. `agent_not_allowed` means the
 authority isn't registered via `auth_httpsig_agent_allow`, not that
 the key directory fetch failed.
 
