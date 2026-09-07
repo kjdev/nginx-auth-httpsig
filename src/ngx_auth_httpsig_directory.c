@@ -144,6 +144,44 @@ ngx_auth_httpsig_directory_normalize_host(ngx_pool_t *pool,
 }
 
 
+void
+ngx_auth_httpsig_directory_hostname(const ngx_str_t *host, ngx_str_t *out)
+{
+    u_char *p;
+    size_t i;
+
+    out->data = host->data;
+    out->len = host->len;
+
+    if (host->len == 0) {
+        return;
+    }
+
+    p = host->data;
+
+    if (p[0] == '[') {
+        for (i = 1; i < host->len; i++) {
+            if (p[i] == ']') {
+                out->len = i + 1;
+                return;
+            }
+        }
+
+        /* No closing bracket: not a well-formed
+         * normalize_host() result, so leave `out` as the
+         * unchanged input rather than guessing. */
+        return;
+    }
+
+    for (i = 0; i < host->len; i++) {
+        if (p[i] == ':') {
+            out->len = i;
+            return;
+        }
+    }
+}
+
+
 ngx_flag_t
 ngx_auth_httpsig_directory_allowed(const ngx_array_t *allow,
     const ngx_str_t *host)

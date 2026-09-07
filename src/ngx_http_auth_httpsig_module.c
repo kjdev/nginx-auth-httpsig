@@ -155,6 +155,8 @@ static ngx_int_t ngx_http_auth_httpsig_variable_agent(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_auth_httpsig_variable_directory_host(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_auth_httpsig_variable_directory_hostname(
+    ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_auth_httpsig_variable_error(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 
@@ -340,6 +342,10 @@ static ngx_http_variable_t ngx_http_auth_httpsig_variables[] = {
 
     { ngx_string("httpsig_directory_host"), NULL,
       ngx_http_auth_httpsig_variable_directory_host,
+      0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
+
+    { ngx_string("httpsig_directory_hostname"), NULL,
+      ngx_http_auth_httpsig_variable_directory_hostname,
       0, NGX_HTTP_VAR_NOCACHEABLE, 0 },
 
     { ngx_string("httpsig_error"), NULL,
@@ -2074,6 +2080,33 @@ ngx_http_auth_httpsig_variable_directory_host(ngx_http_request_t *r,
 
     return ngx_http_auth_httpsig_variable_set(v, ctx->directory_host.data,
                                               ctx->directory_host.len);
+}
+
+
+/*
+ * Same r->main ctx access as $httpsig_directory_host above (subrequest
+ * variable-array sharing); returns the port-stripped hostname
+ * (ngx_auth_httpsig_directory_hostname()) for use as
+ * `proxy_ssl_name`, since `$httpsig_directory_host` itself must keep
+ * its port for `Host`/`proxy_pass`.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_variable_directory_hostname(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_auth_httpsig_ctx_t *ctx;
+    ngx_str_t hostname;
+
+    ctx = ngx_http_get_module_ctx(r->main, ngx_http_auth_httpsig_module);
+
+    if (ctx == NULL || ctx->directory_host.len == 0) {
+        return ngx_http_auth_httpsig_variable_unset(v);
+    }
+
+    ngx_auth_httpsig_directory_hostname(&ctx->directory_host, &hostname);
+
+    return ngx_http_auth_httpsig_variable_set(v, hostname.data,
+                                              hostname.len);
 }
 
 

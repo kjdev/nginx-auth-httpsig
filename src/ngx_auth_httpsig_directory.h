@@ -78,6 +78,29 @@ ngx_int_t ngx_auth_httpsig_directory_normalize_host(ngx_pool_t *pool,
     ngx_auth_httpsig_host_reason_t *reason);
 
 /*
+ * Strips a trailing ":port" from a
+ * ngx_auth_httpsig_directory_normalize_host() result, for use as a TLS
+ * SNI server name ($httpsig_directory_hostname): unlike `Host`/
+ * `proxy_pass`, `proxy_ssl_name` expects a bare hostname and treats a
+ * port suffix as part of the name, breaking certificate verification.
+ *
+ * Brackets around an IPv6 literal ("[::1]") are kept -- only the
+ * ":port" suffix after the closing bracket is removed -- mirroring how
+ * nginx's own ngx_http_validate_host() treats the bracketed literal as
+ * the host, port excluded (SNI has no defined meaning for an IP
+ * literal anyway, per RFC 6066 SS3, so this only affects an edge case
+ * with no live consumer).
+ *
+ * `out` aliases `host->data` (no allocation): the hostname is always a
+ * byte-for-byte prefix of an already-normalized host, so no pool is
+ * needed. Safe to call with unnormalized input too (e.g. a missing
+ * closing bracket) -- it degrades to returning `host` unchanged rather
+ * than rejecting, since this is a display/SNI helper, not a validator.
+ */
+void ngx_auth_httpsig_directory_hostname(const ngx_str_t *host,
+    ngx_str_t *out);
+
+/*
  * Reports whether `host` (already normalized) exactly matches an entry
  * in `allow` (an ngx_array_t of normalized ngx_str_t, as produced by
  * the auth_httpsig_agent_allow directive). No wildcard, prefix,
