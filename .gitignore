@@ -18,6 +18,9 @@ compile_commands.json
 tests/unit/test_runner
 tests/unit/test_runner_asan
 
+# Generated demo secrets (keys/certificates)
+example/demo/secrets/
+
 # OS
 .DS_Store
 Thumbs.db
