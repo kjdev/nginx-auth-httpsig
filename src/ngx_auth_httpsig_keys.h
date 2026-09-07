@@ -39,7 +39,6 @@ typedef ngx_int_t (*ngx_auth_httpsig_keys_verify_kid_pt)(
 typedef void (*ngx_auth_httpsig_keys_free_pt)(ngx_auth_httpsig_keys_t *keys);
 
 typedef struct {
-    ngx_str_t                            name;
     ngx_auth_httpsig_keys_has_pt         has;
     ngx_auth_httpsig_keys_has_kid_pt     has_kid;
     ngx_auth_httpsig_keys_verify_pt      verify;
@@ -50,8 +49,6 @@ typedef struct {
 struct ngx_auth_httpsig_keys_s {
     const ngx_auth_httpsig_keys_source_t *source;
     void                                 *data;
-    ngx_str_t                             origin;    /* logging only */
-    ngx_uint_t                            count;
 };
 
 
@@ -63,9 +60,6 @@ struct ngx_auth_httpsig_keys_s {
  * only Ed25519 is supported, and the underlying parser accepts
  * RSA/EC/OKP interchangeably and skips unsupported keys with a warning
  * rather than failing, which would silently admit a mixed-kty JWKS.
- *
- * `origin` is copied for use in log messages (e.g. the configured file
- * path); it may be NULL.
  *
  * `log_level` is the ngx_log_error() level used for a rejected
  * document. Configuration loading passes NGX_LOG_EMERG; a dynamically
@@ -85,8 +79,8 @@ struct ngx_auth_httpsig_keys_s {
  * cleanup-ownership rationale).
  */
 ngx_int_t ngx_auth_httpsig_keys_load_jwks(ngx_pool_t *pool,
-    const ngx_str_t *jwks_json, const ngx_str_t *origin,
-    ngx_uint_t log_level, ngx_auth_httpsig_keys_t **out);
+    const ngx_str_t *jwks_json, ngx_uint_t log_level,
+    ngx_auth_httpsig_keys_t **out);
 
 /* Reports whether `keys` holds a key identified by `keyid` (an RFC 7638
  * thumbprint). Returns 0 if `keys` or `keyid` is NULL. */

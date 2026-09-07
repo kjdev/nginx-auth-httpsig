@@ -23,14 +23,11 @@
 
 
 typedef struct {
-    ngx_str_t                file;
     ngx_auth_httpsig_keys_t *keys;
 } ngx_http_auth_httpsig_jwks_conf_t;
 
 typedef struct {
     const ngx_auth_httpsig_profile_t *def;
-    ngx_str_t                         name;
-    ngx_array_t                      *algs;    /* ngx_str_t, validated only */
     time_t                            expires_max;
     time_t                            max_skew;
 } ngx_http_auth_httpsig_profile_conf_t;
@@ -138,8 +135,6 @@ static char *ngx_http_auth_httpsig_set_scheme_var(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_profile(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
-static char *ngx_http_auth_httpsig_set_alg(ngx_conf_t *cf,
-    ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_agent_allow(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
@@ -219,14 +214,6 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
       NGX_CONF_TAKE1,
       ngx_http_auth_httpsig_set_profile,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      0,
-      NULL },
-
-    { ngx_string("auth_httpsig_alg"),
-      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
-      NGX_CONF_1MORE,
-      ngx_http_auth_httpsig_set_alg,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -466,7 +453,6 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
     conf->mode = NGX_CONF_UNSET_UINT;
     conf->scheme_index = NGX_CONF_UNSET;
     conf->keyid_fallback_allow = NGX_CONF_UNSET;
-    conf->profile.algs = NGX_CONF_UNSET_PTR;
     conf->profile.expires_max = NGX_CONF_UNSET;
     conf->profile.max_skew = NGX_CONF_UNSET;
 
@@ -511,17 +497,14 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     if (conf->jwks.keys == NULL) {
         conf->jwks.keys = prev->jwks.keys;
-        conf->jwks.file = prev->jwks.file;
     }
 
     if (conf->profile.def == NULL) {
         conf->profile.def = prev->profile.def;
-        conf->profile.name = prev->profile.name;
     }
 
     if (conf->profile.def == NULL) {
         conf->profile.def = ngx_auth_httpsig_profile_get(&default_name);
-        conf->profile.name = default_name;
 
         if (conf->profile.def == NULL) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -530,8 +513,6 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
             return NGX_CONF_ERROR;
         }
     }
-
-    ngx_conf_merge_ptr_value(conf->profile.algs, prev->profile.algs, NULL);
 
     ngx_conf_merge_sec_value(conf->profile.expires_max,
                              prev->profile.expires_max,
@@ -690,7 +671,7 @@ ngx_http_auth_httpsig_set_jwks_file(ngx_conf_t *cf, ngx_command_t *cmd,
     ngx_file_info_t fi;
     ngx_pool_cleanup_t *cln;
 
-    if (lcf->jwks.file.len) {
+    if (lcf->jwks.keys != NULL) {
         return "is duplicate";
     }
 
@@ -746,7 +727,7 @@ ngx_http_auth_httpsig_set_jwks_file(ngx_conf_t *cf, ngx_command_t *cmd,
 
     ngx_close_file(fd);
 
-    if (ngx_auth_httpsig_keys_load_jwks(cf->pool, &content, &path,
+    if (ngx_auth_httpsig_keys_load_jwks(cf->pool, &content,
                                         NGX_LOG_EMERG, &lcf->jwks.keys)
         != NGX_OK)
     {
@@ -760,8 +741,6 @@ ngx_http_auth_httpsig_set_jwks_file(ngx_conf_t *cf, ngx_command_t *cmd,
 
     cln->handler = ngx_http_auth_httpsig_cleanup_keys;
     cln->data = lcf->jwks.keys;
-
-    lcf->jwks.file = path;
 
     return NGX_CONF_OK;
 }
@@ -790,51 +769,6 @@ ngx_http_auth_httpsig_set_profile(ngx_conf_t *cf, ngx_command_t *cmd,
     }
 
     lcf->profile.def = def;
-    lcf->profile.name = value[1];
-
-    return NGX_CONF_OK;
-}
-
-
-static char *
-ngx_http_auth_httpsig_set_alg(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
-{
-    ngx_http_auth_httpsig_loc_conf_t *lcf = conf;
-    ngx_str_t *value, *alg;
-    ngx_array_t *algs;
-    ngx_uint_t i;
-
-    if (lcf->profile.algs != NGX_CONF_UNSET_PTR) {
-        return "is duplicate";
-    }
-
-    value = cf->args->elts;
-
-    algs = ngx_array_create(cf->pool, cf->args->nelts - 1, sizeof(ngx_str_t));
-    if (algs == NULL) {
-        return NGX_CONF_ERROR;
-    }
-
-    for (i = 1; i < cf->args->nelts; i++) {
-        if (value[i].len != sizeof("ed25519") - 1
-            || ngx_strncasecmp(value[i].data, (u_char *) "ed25519",
-                               sizeof("ed25519") - 1) != 0)
-        {
-            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                               "auth_httpsig: unsupported algorithm \"%V\", only "
-                               "\"ed25519\" is accepted", &value[i]);
-            return NGX_CONF_ERROR;
-        }
-
-        alg = ngx_array_push(algs);
-        if (alg == NULL) {
-            return NGX_CONF_ERROR;
-        }
-
-        *alg = value[i];
-    }
-
-    lcf->profile.algs = algs;
 
     return NGX_CONF_OK;
 }
@@ -1797,7 +1731,6 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
              * cache_store() assigns below, rather than reusing this
              * pointer (see ngx_http_auth_httpsig_resolve_keys()). */
             if (ngx_auth_httpsig_keys_load_jwks(sr->parent->pool, &ctx->jwks,
-                                                &ctx->directory_host,
                                                 NGX_LOG_WARN, &validated)
                 == NGX_OK)
             {
@@ -1907,8 +1840,7 @@ ngx_http_auth_httpsig_resolve_keys(ngx_http_request_t *r,
         }
     }
 
-    if (ngx_auth_httpsig_keys_load_jwks(r->pool, &ctx->jwks,
-                                        &ctx->directory_host, NGX_LOG_WARN,
+    if (ngx_auth_httpsig_keys_load_jwks(r->pool, &ctx->jwks, NGX_LOG_WARN,
                                         &keys)
         != NGX_OK)
     {

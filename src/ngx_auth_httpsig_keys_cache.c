@@ -145,7 +145,7 @@ ngx_auth_httpsig_keys_cache_put(ngx_auth_httpsig_keys_cache_t *kc,
     saved_log = entry_pool->log;
     entry_pool->log = log;
 
-    rc = ngx_auth_httpsig_keys_load_jwks(entry_pool, jwks, host,
+    rc = ngx_auth_httpsig_keys_load_jwks(entry_pool, jwks,
                                          NGX_LOG_WARN, &parsed);
 
     entry_pool->log = saved_log;

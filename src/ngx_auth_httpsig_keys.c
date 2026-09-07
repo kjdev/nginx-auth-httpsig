@@ -59,7 +59,6 @@ static void ngx_auth_httpsig_keys_chain_free(ngx_auth_httpsig_keys_t *keys);
 static const ngx_auth_httpsig_keys_source_t
     ngx_auth_httpsig_keys_jwks_source =
 {
-    ngx_string("jwks_file"),
     ngx_auth_httpsig_keys_jwks_has,
     ngx_auth_httpsig_keys_jwks_has_kid,
     ngx_auth_httpsig_keys_jwks_verify,
@@ -70,7 +69,6 @@ static const ngx_auth_httpsig_keys_source_t
 static const ngx_auth_httpsig_keys_source_t
     ngx_auth_httpsig_keys_chain_source =
 {
-    ngx_string("chain"),
     ngx_auth_httpsig_keys_chain_has,
     ngx_auth_httpsig_keys_chain_has_kid,
     ngx_auth_httpsig_keys_chain_verify,
@@ -86,8 +84,8 @@ typedef struct {
 
 ngx_int_t
 ngx_auth_httpsig_keys_load_jwks(ngx_pool_t *pool,
-    const ngx_str_t *jwks_json, const ngx_str_t *origin,
-    ngx_uint_t log_level, ngx_auth_httpsig_keys_t **out)
+    const ngx_str_t *jwks_json, ngx_uint_t log_level,
+    ngx_auth_httpsig_keys_t **out)
 {
     nxe_jwx_jwks_t *jwks;
     ngx_auth_httpsig_keys_t *keys;
@@ -124,18 +122,6 @@ ngx_auth_httpsig_keys_load_jwks(ngx_pool_t *pool,
 
     keys->source = &ngx_auth_httpsig_keys_jwks_source;
     keys->data = jwks;
-    keys->count = nxe_jwx_jwks_count(jwks);
-
-    if (origin != NULL && origin->len > 0) {
-        keys->origin.data = ngx_pnalloc(pool, origin->len);
-        if (keys->origin.data == NULL) {
-            nxe_jwx_jwks_free(jwks);
-            return NGX_ERROR;
-        }
-
-        ngx_memcpy(keys->origin.data, origin->data, origin->len);
-        keys->origin.len = origin->len;
-    }
 
     *out = keys;
 
@@ -242,7 +228,6 @@ ngx_auth_httpsig_keys_chain(ngx_pool_t *pool, ngx_auth_httpsig_keys_t *first,
 
     keys->source = &ngx_auth_httpsig_keys_chain_source;
     keys->data = data;
-    keys->count = first->count + second->count;
 
     return keys;
 }
