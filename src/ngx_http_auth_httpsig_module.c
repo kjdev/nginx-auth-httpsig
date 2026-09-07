@@ -140,7 +140,7 @@ static char *ngx_http_auth_httpsig_set_profile(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_alg(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
-static char *ngx_http_auth_httpsig_set_key_directory_allow(ngx_conf_t *cf,
+static char *ngx_http_auth_httpsig_set_agent_allow(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
@@ -247,10 +247,10 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       offsetof(ngx_http_auth_httpsig_loc_conf_t, profile.max_skew),
       NULL },
 
-    { ngx_string("auth_httpsig_key_directory_allow"),
+    { ngx_string("auth_httpsig_agent_allow"),
       NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
       NGX_CONF_1MORE,
-      ngx_http_auth_httpsig_set_key_directory_allow,
+      ngx_http_auth_httpsig_set_agent_allow,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -385,7 +385,7 @@ ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf)
 /*
  * nginx's phase handlers are a per-cycle array shared across every
  * location, so this cannot be scoped to only the locations that declare
- * "auth_httpsig_key_directory_allow". Instead, the whole config is checked
+ * "auth_httpsig_agent_allow". Instead, the whole config is checked
  * once here: if no location anywhere enabled dynamic key fetching, the
  * handler is never registered and static-JWKS-only configs pay nothing
  * (ADR 0013). Once registered, every request pays one indirect call plus
@@ -541,7 +541,7 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                              conf->profile.def->max_skew);
 
     /* Override, not accumulate: a block that declares its own
-     * "auth_httpsig_key_directory_allow" (including "off") discards
+     * "auth_httpsig_agent_allow" (including "off") discards
      * whatever the parent inherited, rather than adding to it (ADR
      * 0013). */
     declared = (conf->directory.allow != NULL);
@@ -589,7 +589,7 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     }
 
     /* Gate on "declared", not on the merged value: a config that puts
-     * "auth_httpsig_key_directory_allow" on the server block and
+     * "auth_httpsig_agent_allow" on the server block and
      * "auth_httpsig_key_directory_request" only on some of its
      * locations is valid (the other locations inherit both), and must
      * not be rejected just because this specific block's merged
@@ -597,7 +597,7 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (declared && conf->directory.allow->nelts > 0) {
         if (conf->directory.request_uri.len == 0) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                               "auth_httpsig: \"auth_httpsig_key_directory_allow\" "
+                               "auth_httpsig: \"auth_httpsig_agent_allow\" "
                                "is set but no "
                                "\"auth_httpsig_key_directory_request\" is "
                                "configured");
@@ -609,7 +609,7 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
         if (mcf->shm_zone == NULL) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                               "auth_httpsig: \"auth_httpsig_key_directory_allow\" "
+                               "auth_httpsig: \"auth_httpsig_agent_allow\" "
                                "is set but no \"auth_httpsig_key_cache_zone\" is "
                                "configured");
             return NGX_CONF_ERROR;
@@ -862,7 +862,7 @@ ngx_http_auth_httpsig_arg_is_off(const ngx_str_t *value)
  * than erroring, matching directives like "allow"/"deny".
  */
 static char *
-ngx_http_auth_httpsig_set_key_directory_allow(ngx_conf_t *cf,
+ngx_http_auth_httpsig_set_agent_allow(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf)
 {
     ngx_http_auth_httpsig_loc_conf_t *lcf = conf;
@@ -883,7 +883,7 @@ ngx_http_auth_httpsig_set_key_directory_allow(ngx_conf_t *cf,
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "auth_httpsig: \"off\" cannot be "
                                    "combined with hostnames in "
-                                   "\"auth_httpsig_key_directory_allow\"");
+                                   "\"auth_httpsig_agent_allow\"");
                 return NGX_CONF_ERROR;
             }
         }
@@ -893,9 +893,9 @@ ngx_http_auth_httpsig_set_key_directory_allow(ngx_conf_t *cf,
         && (is_off || lcf->directory.allow->nelts == 0))
     {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "auth_httpsig: \"auth_httpsig_key_directory_allow "
+                           "auth_httpsig: \"auth_httpsig_agent_allow "
                            "off\" cannot be combined with other "
-                           "\"auth_httpsig_key_directory_allow\" directives "
+                           "\"auth_httpsig_agent_allow\" directives "
                            "in the same block");
         return NGX_CONF_ERROR;
     }
@@ -921,7 +921,7 @@ ngx_http_auth_httpsig_set_key_directory_allow(ngx_conf_t *cf,
         {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                "auth_httpsig: invalid host \"%V\" in "
-                               "\"auth_httpsig_key_directory_allow\"",
+                               "\"auth_httpsig_agent_allow\"",
                                &value[i]);
             return NGX_CONF_ERROR;
         }

@@ -54,7 +54,7 @@ typedef enum {
 
 /*
  * Normalizes a bare "host[:port]" argument
- * (auth_httpsig_key_directory_allow, or a Signature-Agent host already
+ * (auth_httpsig_agent_allow, or a Signature-Agent host already
  * extracted from a URL) for
  * allow-list matching: lowercases it and strips a trailing ":443",
  * since the default HTTPS port carries no matching information (ADR
@@ -80,7 +80,7 @@ ngx_int_t ngx_auth_httpsig_directory_normalize_host(ngx_pool_t *pool,
 /*
  * Reports whether `host` (already normalized) exactly matches an entry
  * in `allow` (an ngx_array_t of normalized ngx_str_t, as produced by
- * the auth_httpsig_key_directory_allow directive). No wildcard, prefix,
+ * the auth_httpsig_agent_allow directive). No wildcard, prefix,
  * or suffix matching -- exact match only, by design (ADR 0013.2).
  *
  * Returns 0 if `allow` is NULL or empty, or `host` is NULL.
