@@ -651,7 +651,7 @@ TEST(directory_reason_name_covers_all_values)
     ASSERT(strcmp(
                ngx_auth_httpsig_directory_reason_name(
                    NGX_AUTH_HTTPSIG_FETCH_NOT_ALLOWED),
-               "directory_not_allowed") == 0);
+               "agent_not_allowed") == 0);
     ASSERT(strcmp(
                ngx_auth_httpsig_directory_reason_name(
                    NGX_AUTH_HTTPSIG_FETCH_BUSY),

@@ -301,7 +301,7 @@ verified=[0] error=[parse_error]
 
 
 
-=== TEST 8: a directory fetch rejected by the allowlist reports directory_not_allowed even when the keyid is also absent from the static JWKS
+=== TEST 8: a directory fetch rejected by the allowlist reports agent_not_allowed even when the keyid is also absent from the static JWKS
 --- http_config
     auth_httpsig_jwks_file       $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
     auth_httpsig_profile         web-bot-auth;
@@ -368,4 +368,4 @@ my ($input, $sig) = sign(
 --- request
 GET /t
 --- response_body chomp
-verified: error:directory_not_allowed
+verified: error:agent_not_allowed

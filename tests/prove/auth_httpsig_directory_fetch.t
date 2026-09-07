@@ -651,7 +651,7 @@ main::sign_headers('evil.example.test')
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified: error:directory_not_allowed
+verified: error:agent_not_allowed
 
 
 
@@ -1002,7 +1002,7 @@ main::sign_headers(['sig1="https://127.0.0.1:19999";type=cimd'])
 GET /t
 --- error_code: 200
 --- response_body chomp
-verified: error:directory_not_allowed
+verified: error:agent_not_allowed
 
 
 
