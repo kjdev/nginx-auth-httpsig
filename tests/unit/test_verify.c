@@ -61,7 +61,7 @@ build_fixture_kid(ngx_pool_t *pool, const ngx_str_t *base, const char *kid,
         return NGX_ERROR;
     }
 
-    if (ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, keys_out)
+    if (ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NGX_LOG_EMERG, keys_out)
         != NGX_OK)
     {
         return NGX_ERROR;

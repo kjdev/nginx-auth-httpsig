@@ -46,7 +46,7 @@ TEST(keys_thumbprint_match_and_mismatch)
 
     keys = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, &keys));
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NGX_LOG_EMERG, &keys));
     ASSERT(keys != NULL);
 
     /* Independently re-parse the same JWKS to obtain the expected
@@ -88,7 +88,7 @@ TEST(keys_reject_mixed_kty)
 
     keys = NULL;
     ASSERT_EQ_INT(NGX_ERROR,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, &keys));
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NGX_LOG_EMERG, &keys));
     ASSERT(keys == NULL);
 
     EVP_PKEY_free(pkey);
@@ -108,7 +108,7 @@ TEST(keys_reject_non_ed25519_curve)
 
     keys = NULL;
     ASSERT_EQ_INT(NGX_ERROR,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, &keys));
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NGX_LOG_EMERG, &keys));
     ASSERT(keys == NULL);
 
     return 0;
@@ -139,7 +139,7 @@ TEST(keys_reject_too_many_keys)
 
     keys = NULL;
     ASSERT_EQ_INT(NGX_ERROR,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, &keys));
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NGX_LOG_EMERG, &keys));
     ASSERT(keys == NULL);
 
     EVP_PKEY_free(pkey);
@@ -160,7 +160,7 @@ TEST(keys_reject_oversized_document)
 
     keys = NULL;
     ASSERT_EQ_INT(NGX_ERROR,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, &keys));
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NGX_LOG_EMERG, &keys));
     ASSERT(keys == NULL);
 
     return 0;
@@ -195,11 +195,11 @@ TEST(keys_chain_prefers_first_when_both_have_keyid)
 
     first = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_a, NULL, NGX_LOG_EMERG,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_a, NGX_LOG_EMERG,
                                         &first));
     second = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_b, NULL, NGX_LOG_EMERG,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_b, NGX_LOG_EMERG,
                                         &second));
 
     chain = ngx_auth_httpsig_keys_chain(pool, first, second);
@@ -244,7 +244,7 @@ TEST(keys_chain_first_null_returns_second)
 
     second = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json,
                                         NGX_LOG_EMERG, &second));
 
     chain = ngx_auth_httpsig_keys_chain(pool, NULL, second);
@@ -271,7 +271,7 @@ TEST(keys_chain_second_null_returns_first)
 
     first = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json,
                                         NGX_LOG_EMERG, &first));
 
     chain = ngx_auth_httpsig_keys_chain(pool, first, NULL);
@@ -305,7 +305,7 @@ TEST(keys_has_kid_matches_label_not_thumbprint)
 
     keys = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NULL, NGX_LOG_EMERG, &keys));
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_json, NGX_LOG_EMERG, &keys));
     ASSERT(keys != NULL);
 
     ref = nxe_jwx_jwks_parse(&jwks_json, pool);
@@ -348,11 +348,11 @@ TEST(keys_chain_has_kid_checks_both)
 
     first = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_a, NULL, NGX_LOG_EMERG,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_a, NGX_LOG_EMERG,
                                         &first));
     second = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_b, NULL, NGX_LOG_EMERG,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_b, NGX_LOG_EMERG,
                                         &second));
 
     chain = ngx_auth_httpsig_keys_chain(pool, first, second);
@@ -396,11 +396,11 @@ TEST(keys_chain_same_keyid_in_both_resolves)
 
     first = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_a, NULL, NGX_LOG_EMERG,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_a, NGX_LOG_EMERG,
                                         &first));
     second = NULL;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_b, NULL, NGX_LOG_EMERG,
+        ngx_auth_httpsig_keys_load_jwks(pool, &jwks_b, NGX_LOG_EMERG,
                                         &second));
 
     chain = ngx_auth_httpsig_keys_chain(pool, first, second);
