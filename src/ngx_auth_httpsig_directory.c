@@ -26,6 +26,8 @@
 
 static ngx_flag_t ngx_auth_httpsig_directory_is_host_char(u_char c);
 static ngx_flag_t ngx_auth_httpsig_directory_is_ipv6_char(u_char c);
+static ngx_flag_t ngx_auth_httpsig_directory_is_port_suffix(
+    const u_char *p, size_t len);
 static void ngx_auth_httpsig_directory_trim(ngx_str_t *s);
 static ngx_flag_t ngx_auth_httpsig_directory_token_is(
     const ngx_str_t *token, const char *name);
@@ -162,23 +164,64 @@ ngx_auth_httpsig_directory_hostname(const ngx_str_t *host, ngx_str_t *out)
     if (p[0] == '[') {
         for (i = 1; i < host->len; i++) {
             if (p[i] == ']') {
-                out->len = i + 1;
-                return;
+                break;
             }
         }
 
-        /* No closing bracket: not a well-formed
-         * normalize_host() result, so leave `out` as the
-         * unchanged input rather than guessing. */
+        if (i == host->len) {
+            /* No closing bracket: not a well-formed
+             * normalize_host() result, so leave `out` as the
+             * unchanged input rather than guessing. */
+            return;
+        }
+
+        i++;
+
+        /* Only a well-formed ":<digits>" (or nothing) may follow the
+         * closing bracket; anything else means `host` was not
+         * produced by normalize_host(), so leave it unchanged rather
+         * than guessing which prefix is the real hostname. */
+        if (i == host->len
+            || ngx_auth_httpsig_directory_is_port_suffix(p + i,
+                                                         host->len - i))
+        {
+            out->len = i;
+        }
+
         return;
     }
 
     for (i = 0; i < host->len; i++) {
         if (p[i] == ':') {
-            out->len = i;
+            if (ngx_auth_httpsig_directory_is_port_suffix(p + i,
+                                                          host->len - i))
+            {
+                out->len = i;
+            }
+
             return;
         }
     }
+}
+
+
+/* Reports whether [p, p + len) is ":" followed by one or more digits. */
+static ngx_flag_t
+ngx_auth_httpsig_directory_is_port_suffix(const u_char *p, size_t len)
+{
+    size_t i;
+
+    if (len < 2 || p[0] != ':') {
+        return 0;
+    }
+
+    for (i = 1; i < len; i++) {
+        if (p[i] < '0' || p[i] > '9') {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 
