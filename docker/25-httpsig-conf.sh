@@ -146,7 +146,7 @@ if [ -n "${HTTPSIG_AGENT_ALLOW:-}" ]; then
             proxy_ssl_verify                on;
             proxy_ssl_trusted_certificate   ${ca_file};
             proxy_ssl_server_name           on;
-            proxy_ssl_name                  \$httpsig_directory_host;
+            proxy_ssl_name                  \$httpsig_directory_hostname;
             proxy_set_header                Host \$httpsig_directory_host;
             proxy_pass  https://\$httpsig_directory_host/.well-known/http-message-signatures-directory;
         }"
