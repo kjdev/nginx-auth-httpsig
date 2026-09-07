@@ -232,6 +232,42 @@ TEST(directory_normalize_rejects_bracket_with_invalid_char)
 }
 
 
+TEST(directory_hostname_strips_port)
+{
+    ngx_str_t host, out;
+
+    host = str("bot.example.com:8443");
+    ngx_auth_httpsig_directory_hostname(&host, &out);
+    ASSERT_STR_EQ(out, "bot.example.com");
+
+    return 0;
+}
+
+
+TEST(directory_hostname_passes_through_without_port)
+{
+    ngx_str_t host, out;
+
+    host = str("bot.example.com");
+    ngx_auth_httpsig_directory_hostname(&host, &out);
+    ASSERT_STR_EQ(out, "bot.example.com");
+
+    return 0;
+}
+
+
+TEST(directory_hostname_keeps_ipv6_brackets_strips_port)
+{
+    ngx_str_t host, out;
+
+    host = str("[2001:db8::1]:8443");
+    ngx_auth_httpsig_directory_hostname(&host, &out);
+    ASSERT_STR_EQ(out, "[2001:db8::1]");
+
+    return 0;
+}
+
+
 TEST(directory_allowed_exact_match)
 {
     ngx_array_t *allow;
@@ -700,6 +736,9 @@ TEST_SUITE(directory)
     RUN(directory_normalize_rejects_unclosed_bracket);
     RUN(directory_normalize_rejects_empty_brackets);
     RUN(directory_normalize_rejects_bracket_with_invalid_char);
+    RUN(directory_hostname_strips_port);
+    RUN(directory_hostname_passes_through_without_port);
+    RUN(directory_hostname_keeps_ipv6_brackets_strips_port);
     RUN(directory_allowed_exact_match);
     RUN(directory_allowed_rejects_prefix_variant);
     RUN(directory_allowed_rejects_suffix_variant);
