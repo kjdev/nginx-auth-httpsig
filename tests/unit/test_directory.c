@@ -268,6 +268,30 @@ TEST(directory_hostname_keeps_ipv6_brackets_strips_port)
 }
 
 
+TEST(directory_hostname_leaves_non_numeric_port_unchanged)
+{
+    ngx_str_t host, out;
+
+    host = str("example.com:bad");
+    ngx_auth_httpsig_directory_hostname(&host, &out);
+    ASSERT_STR_EQ(out, "example.com:bad");
+
+    return 0;
+}
+
+
+TEST(directory_hostname_leaves_ipv6_bracket_garbage_suffix_unchanged)
+{
+    ngx_str_t host, out;
+
+    host = str("[2001:db8::1]suffix");
+    ngx_auth_httpsig_directory_hostname(&host, &out);
+    ASSERT_STR_EQ(out, "[2001:db8::1]suffix");
+
+    return 0;
+}
+
+
 TEST(directory_allowed_exact_match)
 {
     ngx_array_t *allow;
@@ -739,6 +763,8 @@ TEST_SUITE(directory)
     RUN(directory_hostname_strips_port);
     RUN(directory_hostname_passes_through_without_port);
     RUN(directory_hostname_keeps_ipv6_brackets_strips_port);
+    RUN(directory_hostname_leaves_non_numeric_port_unchanged);
+    RUN(directory_hostname_leaves_ipv6_bracket_garbage_suffix_unchanged);
     RUN(directory_allowed_exact_match);
     RUN(directory_allowed_rejects_prefix_variant);
     RUN(directory_allowed_rejects_suffix_variant);
