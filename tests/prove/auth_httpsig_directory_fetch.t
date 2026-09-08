@@ -416,7 +416,7 @@ our $MainConfig = <<'_EOC_';
         subrequest_output_buffer_size     128k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
-        proxy_ssl_name                  $httpsig_directory_host;
+        proxy_ssl_name                  $httpsig_directory_hostname;
         proxy_set_header                Host $httpsig_directory_host;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
@@ -465,7 +465,7 @@ our $SmallBufferConfig = <<'_EOC_';
         subrequest_output_buffer_size     1k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
-        proxy_ssl_name                  $httpsig_directory_host;
+        proxy_ssl_name                  $httpsig_directory_hostname;
         proxy_set_header                Host $httpsig_directory_host;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
@@ -511,7 +511,7 @@ our $LocScopeConfig = <<'_EOC_';
         subrequest_output_buffer_size     128k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
-        proxy_ssl_name                  $httpsig_directory_host;
+        proxy_ssl_name                  $httpsig_directory_hostname;
         proxy_set_header                Host $httpsig_directory_host;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
@@ -553,7 +553,7 @@ our $FallbackConfig = <<'_EOC_';
         subrequest_output_buffer_size  128k;
         proxy_ssl_verify                off;
         proxy_ssl_server_name           on;
-        proxy_ssl_name                  $httpsig_directory_host;
+        proxy_ssl_name                  $httpsig_directory_hostname;
         proxy_set_header                Host $httpsig_directory_host;
         proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
     }
