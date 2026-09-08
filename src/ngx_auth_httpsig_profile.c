@@ -510,6 +510,18 @@ ngx_auth_httpsig_profile_select_label(ngx_pool_t *pool,
         return NGX_DECLINED;
     }
 
+    /* The caller only reaches select_label() once Signature-Agent is
+     * known to be present (directory_handler()'s precondition), so
+     * agent_present is always true here and step 10's check reduces to
+     * this: a signature that doesn't cover Signature-Agent will fail
+     * ngx_auth_httpsig_profile_verify() regardless of the fetch, so
+     * don't waste a subrequest on it. */
+    if (profile->require_agent_covered
+        && !(sig.covered & NGX_AUTH_HTTPSIG_COMP_SIGNATURE_AGENT))
+    {
+        return NGX_DECLINED;
+    }
+
     *label = entry->key;
 
     return NGX_OK;
