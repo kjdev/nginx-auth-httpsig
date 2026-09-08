@@ -698,7 +698,7 @@ static const ngx_auth_httpsig_base_derive_t
     { ngx_string("@query-param"),
       NGX_AUTH_HTTPSIG_BASE_DERIVE_QUERY_PARAM,    0 },
     { ngx_string("@request-target"),
-      NGX_AUTH_HTTPSIG_BASE_DERIVE_REQUEST_TARGET, 1 },
+      NGX_AUTH_HTTPSIG_BASE_DERIVE_REQUEST_TARGET, 0 },
     { ngx_string("@target-uri"),
       NGX_AUTH_HTTPSIG_BASE_DERIVE_TARGET_URI,     1 },
 };
@@ -744,8 +744,17 @@ ngx_auth_httpsig_base_derive_component(ngx_pool_t *pool,
 
     /* @query-param carries its own "name" parameter rather than
      * rejecting all params, so it must bypass the shared reject_params()
-     * check below. */
+     * check below. It also depends on req->query like @query does, so
+     * it needs the same target_defined guard before branching off to
+     * its dedicated lookup (RFC 9421 section 2.2.8 derives it from the
+     * target URI's query component, which CONNECT authority-form and
+     * OPTIONS * asterisk-form don't have). */
     if (d->id == NGX_AUTH_HTTPSIG_BASE_DERIVE_QUERY_PARAM) {
+        if (!req->target_defined) {
+            *reason = NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET;
+            return NGX_DECLINED;
+        }
+
         return ngx_auth_httpsig_base_query_param(pool, req, component, out,
                                                  reason);
     }
@@ -755,9 +764,12 @@ ngx_auth_httpsig_base_derive_component(ngx_pool_t *pool,
         return rc;
     }
 
-    /* @path, @query, @request-target, and @target-uri all describe a
-     * concrete request target; without one (CONNECT authority-form,
-     * OPTIONS * asterisk-form) there is nothing meaningful to derive. */
+    /* @path and @query describe a concrete request target; without one
+     * (CONNECT authority-form, OPTIONS * asterisk-form) there is nothing
+     * meaningful to derive. @target-uri is reconstructed from those same
+     * parts, so it needs the guard too. @request-target (section 2.2.5)
+     * is defined for every request-target form, including "*" and
+     * "authority", so it is exempt (needs_target == 0). */
     if (d->needs_target && !req->target_defined) {
         *reason = NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET;
         return NGX_DECLINED;
