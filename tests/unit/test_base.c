@@ -346,12 +346,6 @@ TEST(derive_component_undefined_target)
     ASSERT_EQ_INT(rc, NGX_DECLINED);
     ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET);
 
-    component = build_component(pool, "@request-target");
-    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
-                                                 &reason);
-    ASSERT_EQ_INT(rc, NGX_DECLINED);
-    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET);
-
     /* @path/@query must also fail closed for CONNECT authority-form and
      * OPTIONS * asterisk-form requests, not silently fall back to "/"
      * and "?": that would make the base string indistinguishable from
@@ -367,6 +361,41 @@ TEST(derive_component_undefined_target)
                                                  &reason);
     ASSERT_EQ_INT(rc, NGX_DECLINED);
     ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET);
+
+    /* @query-param derives from the target URI's query component just
+     * like @query, so it must fail closed the same way. */
+    component = build_component(pool, "@query-param");
+    push_param(pool, &component, "name", "x");
+    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
+                                                 &reason);
+    ASSERT_EQ_INT(rc, NGX_DECLINED);
+    ASSERT_EQ_INT(reason, NGX_AUTH_HTTPSIG_BASE_UNDEFINED_TARGET);
+
+    return 0;
+}
+
+
+TEST(derive_component_request_target_ignores_undefined_target)
+{
+    ngx_auth_httpsig_request_t *req;
+    ngx_auth_httpsig_sfv_item_t component;
+    ngx_str_t out;
+    ngx_auth_httpsig_base_reason_t reason;
+    ngx_int_t rc;
+
+    /* RFC 9421 section 2.2.5 defines @request-target for every
+     * request-target form, including "*" (OPTIONS *) and "authority"
+     * (CONNECT); unlike @path/@query/@target-uri it does not need a
+     * concrete target URI. */
+    req = build_test_request(pool);
+    req->target_defined = 0;
+    req->request_target = sfv_str("*");
+
+    component = build_component(pool, "@request-target");
+    rc = ngx_auth_httpsig_base_derive_component(pool, req, &component, &out,
+                                                 &reason);
+    ASSERT_EQ_INT(rc, NGX_OK);
+    ASSERT_STR_EQ(out, "*");
 
     return 0;
 }
@@ -1057,6 +1086,7 @@ TEST_SUITE(base)
     RUN(field_value_missing_returns_declined);
     RUN(derive_component_unknown_at_prefix);
     RUN(derive_component_undefined_target);
+    RUN(derive_component_request_target_ignores_undefined_target);
     RUN(derive_component_rejects_params);
     RUN(query_param_extracts_and_decodes);
     RUN(query_param_name_matches_percent_encoded_key);
