@@ -1786,6 +1786,7 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
 
                 ngx_auth_httpsig_cache_store(cache, &ctx->directory_host,
                                              &ctx->jwks, now + ttl,
+                                             lcf->directory.cache_min_ttl,
                                              &ctx->directory_generation);
 
             } else {

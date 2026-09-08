@@ -322,7 +322,7 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
 ngx_int_t
 ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
     const ngx_str_t *host, const ngx_str_t *jwks, time_t expires_at,
-    ngx_uint_t *generation)
+    time_t retry_ttl, ngx_uint_t *generation)
 {
     uint32_t hash;
     ngx_auth_httpsig_cache_node_t *cn;
@@ -359,7 +359,14 @@ ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
     data = ngx_slab_alloc_locked(ctx->shpool, jwks->len);
 
     if (data == NULL) {
+        /* Leaving expires_at untouched would make the next lookup()
+         * reclaim the fetch right immediately, re-fetching successfully
+         * only to fail the same slab allocation again -- a fetch per
+         * request until the zone frees up room. Back off like a failed
+         * fetch would (_release()), while any prior jwks on this node
+         * keeps serving as a HIT (ADR 0015). */
         cn->fetching = 0;
+        cn->expires_at = ngx_time() + retry_ttl;
 
         ngx_shmtx_unlock(&ctx->shpool->mutex);
 

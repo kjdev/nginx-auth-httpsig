@@ -121,10 +121,16 @@ ngx_int_t ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
  * existed with an older jwks and generation: this deliberately avoids
  * pairing a stale generation number with a byte string that was never
  * actually stored.
+ *
+ * If the node already exists but the shared zone has no room for the
+ * jwks bytes, the fetch right is released as if by _release(), using
+ * `now + retry_ttl` as the new expiry: this keeps serving any prior
+ * jwks (ADR 0015) while backing off retries to once per `retry_ttl`
+ * instead of once per request until the zone frees up room.
  */
 ngx_int_t ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
     const ngx_str_t *host, const ngx_str_t *jwks, time_t expires_at,
-    ngx_uint_t *generation);
+    time_t retry_ttl, ngx_uint_t *generation);
 
 /*
  * Releases `host`'s fetch right after a failed fetch, without touching
