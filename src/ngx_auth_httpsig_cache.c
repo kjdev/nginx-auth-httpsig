@@ -24,6 +24,9 @@ static ngx_auth_httpsig_cache_node_t *ngx_auth_httpsig_cache_find_victim(
 static ngx_auth_httpsig_cache_node_t *ngx_auth_httpsig_cache_alloc_node(
     ngx_auth_httpsig_cache_ctx_t *ctx, const ngx_str_t *host, uint32_t hash,
     time_t now);
+static ngx_int_t ngx_auth_httpsig_cache_copy_jwks(ngx_pool_t *pool,
+    const ngx_auth_httpsig_cache_node_t *cn, ngx_str_t *jwks,
+    ngx_uint_t *generation);
 
 
 ngx_int_t
@@ -237,6 +240,29 @@ ngx_auth_httpsig_cache_alloc_node(ngx_auth_httpsig_cache_ctx_t *ctx,
 }
 
 
+/* Copies cn->jwks and cn->generation out to the caller's pool. Called with
+ * shpool->mutex held; caller must already know cn->jwks.len > 0. */
+static ngx_int_t
+ngx_auth_httpsig_cache_copy_jwks(ngx_pool_t *pool,
+    const ngx_auth_httpsig_cache_node_t *cn, ngx_str_t *jwks,
+    ngx_uint_t *generation)
+{
+    jwks->data = ngx_pnalloc(pool, cn->jwks.len);
+    if (jwks->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(jwks->data, cn->jwks.data, cn->jwks.len);
+    jwks->len = cn->jwks.len;
+
+    if (generation != NULL) {
+        *generation = cn->generation;
+    }
+
+    return NGX_OK;
+}
+
+
 ngx_int_t
 ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
     ngx_pool_t *pool, const ngx_str_t *host, time_t now, ngx_str_t *jwks,
@@ -255,6 +281,13 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
         *generation = 0;
     }
 
+    /* Every status other than HIT and BUSY-with-a-stale-jwks leaves
+     * *jwks untouched below; without this, callers that only check
+     * jwks->len after a BUSY result would read whatever the caller's
+     * stack happened to hold. */
+    jwks->len = 0;
+    jwks->data = NULL;
+
     hash = ngx_crc32_short(host->data, host->len);
 
     ngx_shmtx_lock(&ctx->shpool->mutex);
@@ -263,17 +296,11 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
 
     if (cn != NULL && cn->expires_at > now) {
         if (cn->jwks.len > 0) {
-            jwks->data = ngx_pnalloc(pool, cn->jwks.len);
-            if (jwks->data == NULL) {
+            if (ngx_auth_httpsig_cache_copy_jwks(pool, cn, jwks, generation)
+                != NGX_OK)
+            {
                 ngx_shmtx_unlock(&ctx->shpool->mutex);
                 return NGX_ERROR;
-            }
-
-            ngx_memcpy(jwks->data, cn->jwks.data, cn->jwks.len);
-            jwks->len = cn->jwks.len;
-
-            if (generation != NULL) {
-                *generation = cn->generation;
             }
 
             *status = NGX_AUTH_HTTPSIG_CACHE_HIT;
@@ -289,6 +316,22 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
     if (cn != NULL && cn->fetching
         && now - cn->fetching_since < NGX_AUTH_HTTPSIG_CACHE_FETCH_TIMEOUT)
     {
+        /* The node's jwks is whatever the last successful fetch left
+         * behind (possibly from before this expiry, ADR 0015's "keep
+         * serving stale" already applies to release()'s backoff window;
+         * this extends the same tolerance to the in-flight refetch
+         * window instead of leaving concurrent requests without a
+         * verification result for the length of a fetch RTT). The caller
+         * decides whether to use it or to fail open on BUSY with no
+         * jwks. */
+        if (cn->jwks.len > 0
+            && ngx_auth_httpsig_cache_copy_jwks(pool, cn, jwks, generation)
+            != NGX_OK)
+        {
+            ngx_shmtx_unlock(&ctx->shpool->mutex);
+            return NGX_ERROR;
+        }
+
         *status = NGX_AUTH_HTTPSIG_CACHE_BUSY;
         ngx_shmtx_unlock(&ctx->shpool->mutex);
         return NGX_OK;

@@ -56,7 +56,11 @@ typedef struct {
 typedef enum {
     NGX_AUTH_HTTPSIG_CACHE_HIT = 0,   /* a valid jwks was copied into *jwks */
     NGX_AUTH_HTTPSIG_CACHE_CLAIMED,   /* caller now holds the fetch right */
-    NGX_AUTH_HTTPSIG_CACHE_BUSY,      /* another worker is fetching */
+    NGX_AUTH_HTTPSIG_CACHE_BUSY,      /* another worker is fetching; *jwks
+                                       * holds the previous fetch's stale
+                                       * jwks if one exists (len > 0), or
+                                       * is left untouched (len == 0) if
+                                       * this is the first fetch for host */
     NGX_AUTH_HTTPSIG_CACHE_NEGATIVE,  /* the last fetch failed; too soon
                                        * to retry */
     NGX_AUTH_HTTPSIG_CACHE_UNAVAILABLE /* the zone has no room for a new

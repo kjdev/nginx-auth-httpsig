@@ -1527,6 +1527,18 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
 
     case NGX_AUTH_HTTPSIG_CACHE_BUSY:
+        if (jwks.len > 0) {
+            /* Another worker is already refetching; verifying against
+             * the stale jwks this node held before expiry avoids a
+             * fail-open window of a fetch RTT on every TTL boundary
+             * (ADR 0015 already accepts stale jwks across a failed
+             * refetch, so tolerating it across an in-flight one too
+             * does not introduce a new risk). */
+            ctx->jwks = jwks;
+            ctx->directory_done = 1;
+            return NGX_DECLINED;
+        }
+
         return ngx_http_auth_httpsig_directory_fail_open(ctx,
                                                          NGX_AUTH_HTTPSIG_FETCH_BUSY);
 
