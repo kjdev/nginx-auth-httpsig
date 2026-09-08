@@ -297,8 +297,17 @@ ngx_auth_httpsig_profile_verify(ngx_pool_t *pool,
             return NGX_DECLINED;
         }
 
+        /*
+         * A negative lifetime (expires before created) is rejected
+         * alongside an overlong one: expires_max bounds how long a
+         * signature may remain valid, and a signature that is already
+         * expired at creation is never valid, so both are the same
+         * "lifetime is out of bounds" failure.
+         */
         if ((sig->present & NGX_AUTH_HTTPSIG_PARAM_CREATED)
-            && sig->expires - sig->created > (int64_t) pctx->expires_max)
+            && (sig->expires < sig->created
+                || sig->expires - sig->created
+                > (int64_t) pctx->expires_max))
         {
             *result = NGX_AUTH_HTTPSIG_RESULT_EXPIRED;
             return NGX_DECLINED;
