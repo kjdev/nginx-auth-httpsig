@@ -1079,6 +1079,44 @@ TEST(profile_expires_created_window_too_wide_is_expired){
 }
 
 
+TEST(profile_expires_before_created_is_expired){
+    profile_fixture_t fx;
+    ngx_auth_httpsig_profile_ctx_t pctx;
+    ngx_auth_httpsig_signature_t sig;
+    ngx_auth_httpsig_result_t result;
+    ngx_str_t input_text;
+
+    ASSERT_EQ_INT(NGX_OK, build_fixture(pool, &fx));
+
+    /*
+     * expires (TEST_NOW - 30) is before created (TEST_NOW): a negative
+     * lifetime that the expires-created difference check alone would
+     * miss, since the negative difference never exceeds expires_max.
+     * Both created and expires stay within max_skew of "now" so the
+     * skew checks alone would pass this.
+     */
+    input_text = fmt(pool,
+                     "sig1=(\"@target-uri\" \"@authority\");created=%d;expires=%d;"
+                     "keyid=\"%.*s\";tag=\"web-bot-auth\"",
+                     TEST_NOW, TEST_NOW - 30,
+                     (int) fx.thumbprint.len, (char *) fx.thumbprint.data);
+
+    attach_signature(pool, &fx, &input_text, "sig1");
+
+    pctx = build_ctx(&fx);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+                  ngx_auth_httpsig_profile_verify(pool, &pctx, fx.req, &sig,
+                                                  &result));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_RESULT_EXPIRED, result);
+
+    ngx_auth_httpsig_keys_free(fx.keys);
+    EVP_PKEY_free(fx.pkey);
+
+    return 0;
+}
+
+
 TEST(profile_first_matching_tag_label_wins){
     profile_fixture_t fx;
     ngx_auth_httpsig_profile_ctx_t pctx;
@@ -1161,5 +1199,6 @@ TEST_SUITE(profile){
     RUN(profile_created_skew_boundary_fails_beyond);
     RUN(profile_expires_past_beyond_skew_is_expired);
     RUN(profile_expires_created_window_too_wide_is_expired);
+    RUN(profile_expires_before_created_is_expired);
     RUN(profile_first_matching_tag_label_wins);
 }
