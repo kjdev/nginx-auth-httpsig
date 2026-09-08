@@ -1195,21 +1195,59 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
         req->target_defined = 0;
 
     } else {
+        ngx_str_t path_query;
+        u_char *cp, *end;
+
         req->target_defined = 1;
 
-        qmark = ngx_strlchr(r->unparsed_uri.data,
-                            r->unparsed_uri.data + r->unparsed_uri.len, '?');
+        /*
+         * Absolute-form request-target (RFC 9112 §3.2.2), e.g.
+         * "GET http://example.com/x?y HTTP/1.1", leaves unparsed_uri as
+         * the whole "scheme://authority/path?query". @path (§2.2.6) and
+         * @query (§2.2.7) are defined against the target URI's path/query
+         * components, not against the request-target's literal bytes, so
+         * the "scheme://authority" prefix is skipped before splitting on
+         * '?'. @request-target above intentionally keeps the untouched
+         * unparsed_uri, since §2.2.5 uses the request-target as-is.
+         */
+        path_query = r->unparsed_uri;
+        cp = r->unparsed_uri.data;
+        end = cp + r->unparsed_uri.len;
+
+        while (cp < end
+               && (((*cp >= 'a' && *cp <= 'z') || (*cp >= 'A' && *cp <= 'Z')
+                    || (*cp >= '0' && *cp <= '9') || *cp == '+' || *cp == '-'
+                    || *cp == '.')))
+        {
+            cp++;
+        }
+
+        if (cp > r->unparsed_uri.data && end - cp >= 3
+            && cp[0] == ':' && cp[1] == '/' && cp[2] == '/')
+        {
+            cp += 3;
+
+            while (cp < end && *cp != '/' && *cp != '?') {
+                cp++;
+            }
+
+            path_query.data = cp;
+            path_query.len = end - cp;
+        }
+
+        qmark = ngx_strlchr(path_query.data,
+                            path_query.data + path_query.len, '?');
 
         if (qmark != NULL) {
             req->has_query = 1;
-            req->path.data = r->unparsed_uri.data;
-            req->path.len = qmark - r->unparsed_uri.data;
+            req->path.data = path_query.data;
+            req->path.len = qmark - path_query.data;
             req->query.data = qmark + 1;
-            req->query.len = r->unparsed_uri.data + r->unparsed_uri.len
+            req->query.len = path_query.data + path_query.len
                              - (qmark + 1);
 
         } else {
-            req->path = r->unparsed_uri;
+            req->path = path_query;
         }
     }
 
