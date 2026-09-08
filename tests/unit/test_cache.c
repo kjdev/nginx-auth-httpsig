@@ -120,6 +120,45 @@ TEST(cache_lookup_reports_busy_while_fetching)
 }
 
 
+TEST(cache_lookup_busy_serves_stale_jwks)
+{
+    ngx_auth_httpsig_cache_ctx_t *ctx;
+    ngx_str_t host, jwks, out;
+    ngx_auth_httpsig_cache_status_t status;
+    ngx_uint_t stored_generation, out_generation;
+
+    host = str("busy-stale.example.com");
+    jwks = str("{\"keys\":[\"stale\"]}");
+
+    ctx = cache_new(pool, 65536, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 1200, 100,
+            &stored_generation));
+    ASSERT(stored_generation != 0);
+
+    /* Node expired; this lookup claims the refetch right, leaving the
+     * previous jwks in place on the node. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_lookup(ctx, pool, &host, 1300, &out, &status,
+            NULL));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_CACHE_CLAIMED, status);
+
+    /* A concurrent request arrives while the refetch is in flight: it
+     * must not fail open when a stale jwks is still available. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_lookup(ctx, pool, &host, 1301, &out,
+            &status, &out_generation));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_CACHE_BUSY, status);
+    ASSERT_STR_EQ(out, "{\"keys\":[\"stale\"]}");
+    ASSERT_EQ_INT((int) stored_generation, (int) out_generation);
+
+    cache_free(ctx);
+    return 0;
+}
+
+
 TEST(cache_lookup_reclaims_stranded_fetch)
 {
     ngx_auth_httpsig_cache_ctx_t *ctx;
@@ -889,6 +928,7 @@ TEST_SUITE(cache)
 {
     RUN(cache_lookup_claims_on_miss);
     RUN(cache_lookup_reports_busy_while_fetching);
+    RUN(cache_lookup_busy_serves_stale_jwks);
     RUN(cache_lookup_reclaims_stranded_fetch);
     RUN(cache_store_then_lookup_hits);
     RUN(cache_lookup_refetches_after_expiry);
