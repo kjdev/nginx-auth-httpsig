@@ -166,7 +166,7 @@ TEST(cache_store_then_lookup_hits)
     ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_CACHE_CLAIMED, status);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 2000, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 2000, 100, NULL));
 
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_cache_lookup(ctx, pool, &host, 1500, &out, &status,
@@ -192,7 +192,7 @@ TEST(cache_lookup_refetches_after_expiry)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 100, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 100, 100, NULL));
 
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_cache_lookup(ctx, pool, &host, 200, &out, &status,
@@ -245,7 +245,7 @@ TEST(cache_release_keeps_stale_jwks)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 1100, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 1100, 100, NULL));
 
     /* Expiry forces a refetch claim, and that refetch fails -- release()
      * must not touch the still-cached jwks payload (ADR 0015: serve
@@ -283,11 +283,11 @@ TEST(cache_store_replaces_previous_jwks)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks1, 5000, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks1, 5000, 100, NULL));
     used_after_first = ctx->shpool->used;
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks2, 6000, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks2, 6000, 100, NULL));
     used_after_second = ctx->shpool->used;
 
     /* The old jwks allocation must be freed before/around the new one,
@@ -327,10 +327,10 @@ TEST(cache_store_evicts_expired_node_under_pressure)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks_a, 100, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks_a, 100, 100, NULL));
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_b, &jwks_b, 100, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host_b, &jwks_b, 100, 100, NULL));
 
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_cache_lookup(ctx, pool, &host_b, 50, &out, &status,
@@ -406,9 +406,9 @@ TEST(cache_tracks_multiple_hosts_independently)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks_a, 5000, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks_a, 5000, 100, NULL));
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_b, &jwks_b, 5000, NULL));
+        ngx_auth_httpsig_cache_store(ctx, &host_b, &jwks_b, 5000, 100, NULL));
 
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_cache_lookup(ctx, pool, &host_a, 1000, &out, &status,
@@ -492,7 +492,7 @@ TEST(cache_init_zone_reattaches_on_reload)
     jwks = str("{\"keys\":[]}");
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(&ctx1, &host, &jwks, 5000, NULL));
+        ngx_auth_httpsig_cache_store(&ctx1, &host, &jwks, 5000, 100, NULL));
 
     /* A reload hands the module the previous cycle's ctx as `data`; it
      * must reattach to the existing sh/shpool rather than reinitializing
@@ -532,7 +532,7 @@ TEST(cache_store_assigns_nonzero_generation)
 
     generation = 0;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, &generation));
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, 100, &generation));
     ASSERT(generation != 0);
 
     cache_free(ctx);
@@ -554,7 +554,7 @@ TEST(cache_lookup_hit_returns_stored_generation)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, 100,
             &stored_generation));
     ASSERT(stored_generation != 0);
 
@@ -584,11 +584,11 @@ TEST(cache_store_generation_is_monotonic)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks1, 5000,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks1, 5000, 100,
             &generation1));
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks2, 6000,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks2, 6000, 100,
             &generation2));
 
     ASSERT(generation2 > generation1);
@@ -614,11 +614,11 @@ TEST(cache_store_generation_is_zone_wide)
     /* host_a -> host_b -> host_a must hand out three strictly increasing
      * values: the counter lives on the zone, not on either host's node. */
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks, 5000, &gen_a1));
+        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks, 5000, 100, &gen_a1));
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_b, &jwks, 5000, &gen_b));
+        ngx_auth_httpsig_cache_store(ctx, &host_b, &jwks, 5000, 100, &gen_b));
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks, 6000, &gen_a2));
+        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks, 6000, 100, &gen_a2));
 
     ASSERT(gen_a1 < gen_b);
     ASSERT(gen_b < gen_a2);
@@ -701,7 +701,7 @@ TEST(cache_release_does_not_change_generation)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 1100,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 1100, 100,
             &stored_generation));
 
     /* Expiry forces a refetch claim, but the refetch fails; release()
@@ -747,8 +747,55 @@ TEST(cache_store_jwks_alloc_failure_reports_zero_generation)
 
     generation = 42;
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, &generation));
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, 100, &generation));
     ASSERT_EQ_INT(0, (long long) generation);
+
+    cache_free(ctx);
+    return 0;
+}
+
+
+TEST(cache_store_jwks_alloc_failure_backs_off_retry)
+{
+    ngx_auth_httpsig_cache_ctx_t *ctx;
+    ngx_str_t host, jwks, out;
+    ngx_auth_httpsig_cache_status_t status;
+    ngx_uint_t generation;
+    size_t budget;
+    time_t before;
+
+    host = str("retry-backoff.example.com");
+    jwks = str("{\"keys\":[\"unstoreable\"]}");
+
+    /* Room for the node itself, but nothing left over for the jwks
+     * payload, same as the generation-zero case above. */
+    budget = cache_zone_overhead(TEST_ZONE_NAME)
+             + sizeof(ngx_auth_httpsig_cache_node_t) + host.len;
+
+    ctx = cache_new(pool, budget, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    generation = 42;
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, 100,
+            &generation));
+    ASSERT_EQ_INT(0, (long long) generation);
+
+    before = ngx_time();
+
+    /* Without the backoff, expires_at would stay 0 and this lookup would
+     * immediately reclaim the fetch right: a fetch that keeps succeeding
+     * but never fitting in the zone would be retried once per request
+     * instead of once per retry_ttl. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_lookup(ctx, pool, &host, before, &out,
+            &status, NULL));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_CACHE_NEGATIVE, status);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_lookup(ctx, pool, &host, before + 100, &out,
+            &status, NULL));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_CACHE_CLAIMED, status);
 
     cache_free(ctx);
     return 0;
@@ -777,10 +824,10 @@ TEST(cache_store_after_eviction_generation_differs_from_evicted_node)
     ASSERT(ctx != NULL);
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks_a, 100, &gen_a1));
+        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks_a, 100, 100, &gen_a1));
 
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_b, &jwks_b, 5000, &gen_b));
+        ngx_auth_httpsig_cache_store(ctx, &host_b, &jwks_b, 5000, 100, &gen_b));
 
     /* host_b's node reuses host_a's evicted slab memory (ngx_memzero'd
      * back to 0 by alloc_node()), yet its generation must not collide
@@ -793,7 +840,7 @@ TEST(cache_store_after_eviction_generation_differs_from_evicted_node)
     /* Storing host_a again (evicting host_b's node in turn) must yield
      * yet another new value, not a reuse of gen_a1. */
     ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks_a, 6000, &gen_a2));
+        ngx_auth_httpsig_cache_store(ctx, &host_a, &jwks_a, 6000, 100, &gen_a2));
     ASSERT(gen_a2 != gen_a1);
     ASSERT(gen_a2 > gen_b);
 
@@ -860,6 +907,7 @@ TEST_SUITE(cache)
     RUN(cache_lookup_generation_zero_for_non_hit_statuses);
     RUN(cache_release_does_not_change_generation);
     RUN(cache_store_jwks_alloc_failure_reports_zero_generation);
+    RUN(cache_store_jwks_alloc_failure_backs_off_retry);
     RUN(cache_store_after_eviction_generation_differs_from_evicted_node);
     RUN(cache_lookup_node_alloc_failure_reports_unavailable_without_fetching);
 }
