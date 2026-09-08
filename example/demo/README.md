@@ -23,6 +23,11 @@ crawler traffic to *verify* the module against it).
 
 Only `proxy`'s port 8080 is published to the host.
 
+`proxy`'s `/httpsig_fetch` internal location carries
+`proxy_pass_request_headers off;` so the directory fetch to `agent` never
+forwards the client's request headers (nginx subrequests otherwise inherit
+`headers_in` from the parent request). Keep this if you copy the config.
+
 ## Usage
 
 ```

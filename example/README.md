@@ -34,6 +34,11 @@ without affecting existing behavior:
 `auth_httpsig_agent_allow` as-is — always replace it with the agent you
 intend to observe.
 
+**Do not remove `proxy_pass_request_headers off;` from `/httpsig_fetch`.**
+nginx subrequests share the parent request's `headers_in`, so without it the
+fetch to the agent-controlled directory host would forward the client's
+`Cookie`, `Authorization`, and any other request headers verbatim.
+
 ## Reading the log
 
 The `httpsig_observe` log_format emits:
