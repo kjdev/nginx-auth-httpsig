@@ -826,6 +826,53 @@ TEST(profile_select_label_declines_on_profile_mismatch){
 }
 
 
+TEST(profile_select_label_declines_when_agent_not_covered){
+    ngx_auth_httpsig_profile_t profile;
+    ngx_array_t *raws;
+    ngx_str_t label;
+
+    /* directory_handler() only calls select_label() once Signature-Agent
+     * is known to be present, so a tagged entry that doesn't cover it
+     * would fail profile_verify()'s step 10 regardless; select_label()
+     * must decline up front rather than trigger a wasted fetch. */
+    ngx_memzero(&profile, sizeof(profile));
+    profile.tag = str("web-bot-auth");
+    profile.require_agent_covered = 1;
+
+    raws = lines(pool, "sig1=(\"@target-uri\");tag=\"web-bot-auth\"", NULL);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+                  ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
+                                                        &label));
+    ASSERT_EQ_INT(0, label.len);
+
+    return 0;
+}
+
+
+TEST(profile_select_label_accepts_when_agent_covered){
+    ngx_auth_httpsig_profile_t profile;
+    ngx_array_t *raws;
+    ngx_str_t label;
+
+    ngx_memzero(&profile, sizeof(profile));
+    profile.tag = str("web-bot-auth");
+    profile.require_agent_covered = 1;
+
+    raws = lines(pool,
+                 "sig1=(\"@target-uri\" \"signature-agent\");"
+                 "tag=\"web-bot-auth\"",
+                 NULL);
+
+    ASSERT_EQ_INT(NGX_OK,
+                  ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
+                                                        &label));
+    ASSERT_STR_EQ(label, "sig1");
+
+    return 0;
+}
+
+
 TEST(profile_tag_mismatch_is_not_signed){
     profile_fixture_t fx;
     ngx_auth_httpsig_profile_ctx_t pctx;
@@ -1191,6 +1238,8 @@ TEST_SUITE(profile){
     RUN(profile_select_label_declines_on_duplicate_label);
     RUN(profile_select_label_declines_on_non_inner_list_entry);
     RUN(profile_select_label_declines_on_profile_mismatch);
+    RUN(profile_select_label_declines_when_agent_not_covered);
+    RUN(profile_select_label_accepts_when_agent_covered);
     RUN(profile_tag_mismatch_is_not_signed);
     RUN(profile_missing_required_param_is_mismatch);
     RUN(profile_missing_authority_and_target_uri_is_mismatch);
