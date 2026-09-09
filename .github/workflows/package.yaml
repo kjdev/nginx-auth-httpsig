@@ -1,0 +1,145 @@
+name: package
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions: {}
+
+env:
+  container: ${{ github.repository }}/nginx
+  archive: ${{ github.event.repository.name }}-${{ github.event.release.tag_name }}
+  # module: latest / a release tag / dev-<sha>, matching the Dockerfile
+  # "module" and "proxy" targets (`task docker:release`). The "proxy"
+  # image reuses the same tag with a "-proxy" suffix.
+  version: ${{ github.event_name == 'release' && github.event.release.tag_name || (github.ref_type == 'tag' && github.ref_name || (github.ref_name == github.event.repository.default_branch && 'latest' || format('dev-{0}', github.sha))) }}
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ${{ matrix.arch == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          set-safe-directory: true
+          submodules: true
+          token: ${{ github.token }}
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f # v7.10.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          provenance: false
+          push: true
+          target: ${{ matrix.target }}
+          tags: ghcr.io/${{ env.container }}:${{ env.version }}${{ matrix.target == 'proxy' && '-proxy' || '' }}-${{ matrix.arch }}
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+        target: [module, proxy]
+
+  index:
+    permissions:
+      contents: read
+      packages: write
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push
+        run: |
+          docker buildx imagetools create \
+            -t "${CONTAINER}:${TAG}" \
+            "${CONTAINER}:${TAG}-amd64" \
+            "${CONTAINER}:${TAG}-arm64"
+        env:
+          CONTAINER: ghcr.io/${{ env.container }}
+          TAG: ${{ env.version }}${{ matrix.target == 'proxy' && '-proxy' || '' }}
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        target: [module, proxy]
+
+  cleanup:
+    permissions:
+      contents: read
+      packages: write
+    needs: index
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clean up untagged images
+        uses: dataaxiom/ghcr-cleanup-action@cd0cdb900b5dbf3a6f2cc869f0dbb0b8211f50c4 # v1.0.16
+        with:
+          owner: ${{ github.repository_owner }}
+          package: ${{ github.event.repository.name }}/nginx
+          token: ${{ github.token }}
+          keep-n-untagged: 0
+        continue-on-error: true
+    timeout-minutes: 30
+
+  source:
+    permissions:
+      contents: write
+    if: ${{ github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          set-safe-directory: true
+          submodules: true
+          token: ${{ github.token }}
+      - name: Create archive (tar.gz)
+        run: |
+          git archive --format=tar --prefix="${archive}/" HEAD -o "${archive}-full.tar"
+          # shellcheck disable=SC2016
+          git submodule foreach --recursive '
+            test "${displaypath}" = "tests/unit/vendor/structured-field-tests" && exit 0
+            git archive --format=tar --prefix="${archive}/${displaypath}/" HEAD -o "${toplevel}/sub.tar" && tar -Af "${toplevel}/${archive}-full.tar" "${toplevel}/sub.tar" && rm "${toplevel}/sub.tar"
+          '
+          gzip "${archive}-full.tar"
+      - name: Create archive (zip)
+        run: |
+          mkdir .extract && tar -xzf "${archive}-full.tar.gz" -C .extract
+          (cd .extract && zip -r ../"${archive}-full.zip" .)
+          rm -rf .extract
+      - name: Upload Release Asset
+        run: |
+          gh release upload "${VERSION}" "${archive}-full.tar.gz#Full Source code (tar.gz)" --clobber
+          gh release upload "${VERSION}" "${archive}-full.zip#Full Source code (zip)" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.release.tag_name }}
+    timeout-minutes: 30
