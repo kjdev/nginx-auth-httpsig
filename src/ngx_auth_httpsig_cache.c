@@ -363,6 +363,50 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
 
 
 ngx_int_t
+ngx_auth_httpsig_cache_claim_rotation_refetch(
+    ngx_auth_httpsig_cache_ctx_t *ctx, const ngx_str_t *host, time_t now,
+    time_t retry_ttl)
+{
+    uint32_t hash;
+    ngx_auth_httpsig_cache_node_t *cn;
+    ngx_int_t rc;
+
+    if (ctx == NULL || host == NULL) {
+        return NGX_ERROR;
+    }
+
+    hash = ngx_crc32_short(host->data, host->len);
+
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+
+    cn = ngx_auth_httpsig_cache_find(ctx, hash, host);
+
+    if (cn == NULL || cn->fetching) {
+        /* No entry to rescue, or another worker (an ordinary refetch,
+         * or a concurrent rotation rescue) already holds the fetch
+         * right for this host. */
+        rc = NGX_DECLINED;
+
+    } else if (cn->forced_refetch_at != 0
+               && now - cn->forced_refetch_at < retry_ttl)
+    {
+        rc = NGX_DECLINED;
+
+    } else {
+        cn->fetching = 1;
+        cn->fetching_since = now;
+        cn->forced_refetch_at = now;
+
+        rc = NGX_OK;
+    }
+
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+    return rc;
+}
+
+
+ngx_int_t
 ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
     const ngx_str_t *host, const ngx_str_t *jwks, time_t expires_at,
     time_t retry_ttl, ngx_uint_t *generation)

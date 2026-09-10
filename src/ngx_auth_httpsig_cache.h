@@ -42,6 +42,10 @@ typedef struct {
     time_t             fetching_since; /* lets another worker reclaim a
                                         * fetching flag stranded by a
                                         * worker that died mid-fetch */
+    time_t             forced_refetch_at; /* last time a rotation-triggered
+                                           * refetch was claimed via
+                                           * _claim_rotation_refetch(); 0
+                                           * means "never" */
     ngx_uint_t         generation; /* sh->generation as of the last
                                     * successful store(); 0 means "never
                                     * stored" */
@@ -114,6 +118,35 @@ ngx_int_t ngx_auth_httpsig_cache_init_zone(ngx_shm_zone_t *shm_zone,
 ngx_int_t ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
     ngx_pool_t *pool, const ngx_str_t *host, time_t now, ngx_str_t *jwks,
     ngx_auth_httpsig_cache_status_t *status, ngx_uint_t *generation);
+
+/*
+ * Claims a rate-limited, out-of-band fetch right for `host` after
+ * _lookup() already reported NGX_AUTH_HTTPSIG_CACHE_HIT but the caller
+ * determined the cached jwks does not cover a keyid the client
+ * presented (a key-rotation signal, ADR 0037). Unlike the CLAIMED
+ * status from _lookup(), this does not create a node: `host` must
+ * already have one.
+ *
+ * The existing `jwks` is left untouched by the claim itself, so a caller
+ * that ends up not calling _store() (via _release()) keeps serving the
+ * stale-but-valid jwks (ADR 0015). `expires_at` is left untouched too,
+ * but _release() unconditionally rewrites it to its own `retry_at`
+ * argument regardless of how much of the node's original TTL remained,
+ * same as it does after an ordinary failed refetch.
+ *
+ * Return value:
+ *   NGX_OK        the caller now holds the fetch right and must
+ *                 eventually call _store() or _release(), exactly as
+ *                 after a CLAIMED result from _lookup().
+ *   NGX_DECLINED  no node exists for `host`, another worker already
+ *                 holds its fetch right, or the last rotation-triggered
+ *                 refetch for `host` was claimed less than `retry_ttl`
+ *                 seconds ago.
+ *   NGX_ERROR     a required argument is NULL.
+ */
+ngx_int_t ngx_auth_httpsig_cache_claim_rotation_refetch(
+    ngx_auth_httpsig_cache_ctx_t *ctx, const ngx_str_t *host, time_t now,
+    time_t retry_ttl);
 
 /*
  * Records a successful fetch for `host` and releases the fetch right.

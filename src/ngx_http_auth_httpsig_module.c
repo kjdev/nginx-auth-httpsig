@@ -41,6 +41,7 @@ typedef struct {
     size_t       max_size;
     time_t       cache_min_ttl;
     time_t       cache_max_ttl;
+    time_t       key_rotation_retry_ttl;
     ngx_flag_t   enabled;        /* derived at merge */
 } ngx_http_auth_httpsig_directory_conf_t;
 
@@ -350,6 +351,15 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       offsetof(ngx_http_auth_httpsig_loc_conf_t, directory.cache_max_ttl),
       NULL },
 
+    { ngx_string("auth_httpsig_key_rotation_retry_ttl"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_sec_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t,
+               directory.key_rotation_retry_ttl),
+      NULL },
+
     { ngx_string("auth_httpsig_key_cache_zone"),
       NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
       ngx_http_auth_httpsig_set_key_cache_zone,
@@ -546,6 +556,7 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
     conf->directory.max_size = NGX_CONF_UNSET_SIZE;
     conf->directory.cache_min_ttl = NGX_CONF_UNSET;
     conf->directory.cache_max_ttl = NGX_CONF_UNSET;
+    conf->directory.key_rotation_retry_ttl = NGX_CONF_UNSET;
 
     return conf;
 }
@@ -640,6 +651,8 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                              prev->directory.cache_min_ttl, 300);
     ngx_conf_merge_sec_value(conf->directory.cache_max_ttl,
                              prev->directory.cache_max_ttl, 3600);
+    ngx_conf_merge_sec_value(conf->directory.key_rotation_retry_ttl,
+                             prev->directory.key_rotation_retry_ttl, 300);
 
     conf->directory.enabled = (conf->directory.allow != NULL
                                && conf->directory.allow->nelts > 0
@@ -657,6 +670,14 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                            "auth_httpsig: \"auth_httpsig_key_cache_max_ttl\" "
                            "must not be less than "
                            "\"auth_httpsig_key_cache_min_ttl\"");
+        return NGX_CONF_ERROR;
+    }
+
+    if (conf->directory.key_rotation_retry_ttl == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: "
+                           "\"auth_httpsig_key_rotation_retry_ttl\" "
+                           "must not be 0");
         return NGX_CONF_ERROR;
     }
 
@@ -1422,12 +1443,22 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
  * ctx->keys_unavailable (so ngx_http_auth_httpsig_evaluate() later reports
  * KEY_UNAVAILABLE instead of aborting the request) and ctx->directory_done
  * (so the phase engine does not re-enter this handler), then declines.
+ *
+ * ctx->jwks is normally still empty here, but a rotation-triggered claim
+ * (ADR 0037) already set it to the stale-but-valid jwks from the HIT that
+ * preceded it before falling through to the claimed-fetch path; if that
+ * claim then fails to reach cache_store()/_release() (pool cleanup or
+ * subrequest setup failure), keys_unavailable must not clobber a jwks the
+ * caller can still verify against.
  */
 static ngx_int_t
 ngx_http_auth_httpsig_directory_fail_open(ngx_http_auth_httpsig_ctx_t *ctx,
     ngx_auth_httpsig_fetch_reason_t reason)
 {
-    ctx->keys_unavailable = 1;
+    if (ctx->jwks.len == 0) {
+        ctx->keys_unavailable = 1;
+    }
+
     ctx->directory_reason = reason;
     ctx->directory_done = 1;
 
@@ -1509,11 +1540,12 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
     ngx_http_post_subrequest_t *ps;
     ngx_http_request_t *sr;
     ngx_array_t *sig_input, *sig_agent;
-    ngx_str_t agent_host, host, jwks, label;
+    ngx_str_t agent_host, host, jwks, label, keyid;
     ngx_auth_httpsig_host_reason_t host_reason;
     ngx_auth_httpsig_cache_status_t status;
+    ngx_auth_httpsig_keys_t *keys;
     ngx_int_t rc;
-    time_t retry_ttl;
+    time_t retry_ttl, rotation_retry_ttl;
 
     if (r != r->main) {
         return NGX_DECLINED;
@@ -1581,8 +1613,10 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
+    ngx_str_null(&keyid);
+
     rc = ngx_auth_httpsig_profile_select_label(r->pool, lcf->profile.def,
-                                               sig_input, &label);
+                                               sig_input, &label, &keyid);
     if (rc == NGX_ERROR) {
         return NGX_ERROR;
     }
@@ -1628,11 +1662,46 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
     switch (status) {
 
     case NGX_AUTH_HTTPSIG_CACHE_HIT:
-        /* Parsing is deferred to evaluate(), which resolves ctx->jwks
-         * through the worker-local parse cache keyed on
-         * ctx->directory_generation instead of reparsing it here on
-         * every request. */
         ctx->jwks = jwks;
+
+        if (keyid.len > 0) {
+            /* This call parses jwks into the worker-local cache keyed on
+             * ctx->directory_generation (ADR 0020), so evaluate()'s later
+             * resolve_keys() call is a cache hit rather than a second
+             * parse. Calling it here, rather than deferring to
+             * evaluate(), is what lets this HIT branch check keyid
+             * coverage before deciding whether ADR 0037's rotation
+             * refetch applies. */
+            keys = ngx_http_auth_httpsig_resolve_keys(r, ctx);
+
+            if (keys != NULL
+                && !ngx_auth_httpsig_keys_has(keys, &keyid)
+                && !ngx_auth_httpsig_keys_has_kid(keys, &keyid)
+                && !ngx_auth_httpsig_keys_has(lcf->jwks.keys, &keyid))
+            {
+                /* keyid matches nothing in the cached directory
+                 * under either lookup, and nothing in the static
+                 * JWKS either: ADR 0037's rotation signal. (No
+                 * kid-fallback check against the static JWKS: it
+                 * is keyed by thumbprint only, same as the
+                 * kid_fallback_keys scoping in evaluate().) Try to
+                 * claim a rate-limited forced refetch; on success,
+                 * fall through to the same claimed-fetch path used
+                 * by NGX_AUTH_HTTPSIG_CACHE_CLAIMED below instead
+                 * of returning here. */
+                rotation_retry_ttl = lcf->directory.key_rotation_retry_ttl;
+
+                if (ngx_auth_httpsig_cache_claim_rotation_refetch(cache,
+                                                                  &host,
+                                                                  ngx_time(),
+                                                                  rotation_retry_ttl)
+                    == NGX_OK)
+                {
+                    break;
+                }
+            }
+        }
+
         ctx->directory_done = 1;
         return NGX_DECLINED;
 
@@ -1745,7 +1814,7 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     ngx_http_auth_httpsig_main_conf_t *mcf;
     ngx_http_core_loc_conf_t *clcf;
     ngx_auth_httpsig_cache_ctx_t *cache;
-    ngx_str_t schema, content_type, body, cache_control;
+    ngx_str_t schema, content_type, body, cache_control, new_jwks;
     ngx_table_elt_t *h, *age_header;
     ngx_uint_t status;
     time_t now, age, ttl;
@@ -1884,11 +1953,16 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     now = ngx_time();
 
     if (accepted) {
-        ctx->jwks.data = ngx_pnalloc(sr->parent->pool, body.len);
+        /* Held in a local until the parse below confirms the document
+         * is well-formed: ctx->jwks may already hold a stale-but-valid
+         * jwks from a rotation-triggered refetch (ADR 0037), and a
+         * failed fetch must leave that in place rather than clobber it
+         * with a partial or NULL buffer. */
+        new_jwks.data = ngx_pnalloc(sr->parent->pool, body.len);
 
-        if (ctx->jwks.data != NULL) {
-            ngx_memcpy(ctx->jwks.data, body.data, body.len);
-            ctx->jwks.len = body.len;
+        if (new_jwks.data != NULL) {
+            ngx_memcpy(new_jwks.data, body.data, body.len);
+            new_jwks.len = body.len;
 
             /* Parsed here only to gate the SHM store against a
              * malformed document; the parsed keyset itself is
@@ -1896,10 +1970,12 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
              * the worker-local parse cache, keyed on the generation
              * cache_store() assigns below, rather than reusing this
              * pointer (see ngx_http_auth_httpsig_resolve_keys()). */
-            if (ngx_auth_httpsig_keys_load_jwks(sr->parent->pool, &ctx->jwks,
+            if (ngx_auth_httpsig_keys_load_jwks(sr->parent->pool, &new_jwks,
                                                 NGX_LOG_WARN, &validated)
                 == NGX_OK)
             {
+                ctx->jwks = new_jwks;
+
                 ttl = ngx_auth_httpsig_directory_ttl(&cache_control, age,
                                                      lcf->directory.
                                                      cache_min_ttl,
@@ -1923,7 +1999,15 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     }
 
     if (!accepted) {
-        ctx->keys_unavailable = 1;
+        /* ctx->jwks is untouched above on failure, so a rotation-
+         * triggered refetch (ADR 0037) that fails still leaves the
+         * prior stale-but-valid jwks in place; only flag key
+         * unavailability when there was never anything to fall back
+         * to. */
+        if (ctx->jwks.len == 0) {
+            ctx->keys_unavailable = 1;
+        }
+
         ctx->directory_reason = reason;
         ngx_auth_httpsig_cache_release(cache, &ctx->directory_host,
                                        now + lcf->directory.cache_min_ttl);
