@@ -77,6 +77,82 @@ identical `proxy_ssl_*`/cache-TTL/size settings (see
 A container that generates a full config from environment variables is in
 [`docker/README.md`](../docker/README.md).
 
+## Enforcing signatures
+
+`auth_httpsig_mode observe` never rejects a request; `enforce` and
+`auth_httpsig_require` add rejection, in two independent, additive ways
+(see [DIRECTIVES.md](DIRECTIVES.md#enforcement) and
+[SECURITY.md](SECURITY.md#fail-open-by-design) for what still fails open
+even with both on).
+
+Reject only a signature that is present and fails verification, while
+still passing unsigned requests through unexamined:
+
+```nginx
+location /t {
+    auth_httpsig_mode      enforce;
+    auth_httpsig_jwks_file /etc/nginx/httpsig_keys.json;
+
+    proxy_pass http://backend;
+}
+```
+
+Add `auth_httpsig_require on` to also reject a request with no in-scope
+signature at all:
+
+```nginx
+location /t {
+    auth_httpsig_mode      enforce;
+    auth_httpsig_require   on;
+    auth_httpsig_jwks_file /etc/nginx/httpsig_keys.json;
+
+    proxy_pass http://backend;
+}
+```
+
+Override the default status codes per failure category (see
+[DIRECTIVES.md](DIRECTIVES.md#enforcement) for the full list and their
+defaults):
+
+```nginx
+location /t {
+    auth_httpsig_mode          enforce;
+    auth_httpsig_jwks_file     /etc/nginx/httpsig_keys.json;
+    auth_httpsig_status_invalid 418;
+
+    proxy_pass http://backend;
+}
+```
+
+### Combining with `auth_basic` via `satisfy any`
+
+`satisfy any` lets a request through if *either* this module or another
+access-phase module accepts it — e.g. accept a valid signature, or fall
+back to HTTP Basic auth for callers that can't sign requests.
+This module clamps its own rejection status to `403` under `satisfy
+any` so it participates correctly in nginx's OR aggregation (see
+[DIRECTIVES.md](DIRECTIVES.md#satisfy-any-and-status-codes)):
+
+```nginx
+location /t {
+    auth_httpsig_mode      enforce;
+    auth_httpsig_jwks_file /etc/nginx/httpsig_keys.json;
+    satisfy any;
+
+    auth_basic           "restricted";
+    auth_basic_user_file /etc/nginx/htpasswd;
+
+    proxy_pass http://backend;
+}
+```
+
+A valid signature grants access immediately, without ever consulting
+`auth_basic`.
+A missing or invalid signature falls through to `auth_basic`; if that
+also fails, the final response is `auth_basic`'s `401` (with
+`WWW-Authenticate`), not this module's `403` — nginx's OR aggregation
+prefers `401` over `403` once both modules have run.
+
 ## Behind a TLS-terminating load balancer
 
 If TLS is terminated in front of nginx and the load balancer forwards

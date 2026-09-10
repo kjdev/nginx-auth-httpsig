@@ -4,11 +4,50 @@ How to read this module's diagnostics when a signature isn't verifying the way y
 
 See also: [DIRECTIVES](DIRECTIVES.md) · [SECURITY](SECURITY.md)
 
-## First: remember this module fails open
+## First: remember this module mostly fails open
 
-Nothing this module does rejects a request.
-If a request you expected to be blocked went through anyway, that is expected behavior today, not a bug — see [SECURITY.md](SECURITY.md#fail-open-by-design).
-What you're troubleshooting is almost always "why didn't `$httpsig_verified` come back `1`," which you diagnose through `$httpsig_error` and the error log, not through observed request outcomes.
+With `auth_httpsig_mode observe` and `auth_httpsig_require off` (both
+defaults), nothing this module does rejects a request — if a request
+you expected to be blocked went through anyway, that is expected
+behavior, not a bug (see [SECURITY.md](SECURITY.md#fail-open-by-design)).
+In that configuration, what you're troubleshooting is almost always
+"why didn't `$httpsig_verified` come back `1`," which you diagnose
+through `$httpsig_error` and the error log, not through observed
+request outcomes.
+
+`auth_httpsig_mode enforce` and `auth_httpsig_require` narrow this: a
+request can now come back with a non-2xx status from this module.
+If a request is being rejected unexpectedly:
+
+- Check whether `auth_httpsig_require on` is set — this rejects any
+  request with no in-scope signature (unsigned, or a mismatched `tag`),
+  independent of whether verification would have succeeded.
+  This is the most common surprise: the response has neither
+  `$httpsig_verified` nor `$httpsig_error` set (both stay unset, the
+  same as a normal fail-open "no verdict"), because at this layer a
+  missing signature and an out-of-scope one look identical.
+  A `403` (or whatever `auth_httpsig_status_missing` is set to) with
+  no `$httpsig_*` variables set at all is the signature of a
+  `require`-driven rejection, not a verification failure — check the
+  response status code, not `$httpsig_error`, to recognize this case.
+- Otherwise, check `$httpsig_error` for the failure category, then the
+  status directive for that category
+  (`auth_httpsig_status_parse_error` / `auth_httpsig_status_invalid`;
+  see [DIRECTIVES.md](DIRECTIVES.md#enforcement)) to see whether it was
+  overridden from the default.
+- `key_unavailable` and every `directory_*` value still fail open even
+  under `enforce`/`require` — they never explain a rejection.
+- If `satisfy any` is configured, this module's status code is clamped
+  to `403` unless it is already `403` or `401` (see
+  [DIRECTIVES.md](DIRECTIVES.md#satisfy-any-and-status-codes)) — a
+  `403` response under `satisfy any` does not necessarily mean
+  `auth_httpsig_status_invalid`/`auth_httpsig_status_missing` are set
+  to `403`; check `$httpsig_error` (or the other module's own
+  diagnostics) to find the actual cause.
+- Also under `satisfy any`, if another access-phase module (e.g.
+  `auth_basic`) returns `401`, that wins over this module's rejection
+  once both have run, and the response carries that module's
+  `WWW-Authenticate` header, not this module's status.
 
 ## Reading `$httpsig_verified` / `$httpsig_error`
 
@@ -66,6 +105,19 @@ grep 'verified="1"' /var/log/nginx/httpsig_observe.log \
 ## Buffer-size warnings
 
 When a key-directory fetch completes, the module logs a warning if `subrequest_output_buffer_size` on the internal fetch location is smaller than `auth_httpsig_key_directory_max_size` — fix by raising `subrequest_output_buffer_size` in that location (see [DIRECTIVES.md](DIRECTIVES.md#auth_httpsig_key_directory_max_size)).
+
+## Configuration-time errors for enforce/require
+
+nginx refuses to start rather than silently ignore a contradictory
+enforce/require configuration:
+
+- `"auth_httpsig_require" is "on" but "auth_httpsig_mode" is "off"` —
+  the effective (merged) mode for a block with `require on` resolved to
+  `off`; set `auth_httpsig_mode` to `observe` or `enforce` somewhere the
+  block inherits from, or drop `require`.
+- A status directive (`auth_httpsig_status_parse_error` and friends)
+  outside `400`–`599` is also a configuration-time error, not a
+  clamped/ignored value.
 
 ## Still stuck
 
