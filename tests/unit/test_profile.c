@@ -721,8 +721,31 @@ TEST(profile_select_label_picks_first_tagged_entry){
 
     ASSERT_EQ_INT(NGX_OK,
                   ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
-                                                        &label));
+                                                        &label, NULL));
     ASSERT_STR_EQ(label, "sig1");
+
+    return 0;
+}
+
+
+TEST(profile_select_label_outputs_selected_entrys_keyid){
+    ngx_auth_httpsig_profile_t profile;
+    ngx_array_t *raws;
+    ngx_str_t label, keyid;
+
+    ngx_memzero(&profile, sizeof(profile));
+    profile.tag = str("web-bot-auth");
+
+    raws = lines(pool,
+                 "sig0=(\"@target-uri\");keyid=\"abc123\";"
+                 "tag=\"web-bot-auth\"",
+                 NULL);
+
+    ASSERT_EQ_INT(NGX_OK,
+                  ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
+                                                        &label, &keyid));
+    ASSERT_STR_EQ(label, "sig0");
+    ASSERT_STR_EQ(keyid, "abc123");
 
     return 0;
 }
@@ -740,7 +763,7 @@ TEST(profile_select_label_declines_on_tag_mismatch){
 
     ASSERT_EQ_INT(NGX_DECLINED,
                   ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
-                                                        &label));
+                                                        &label, NULL));
     ASSERT_EQ_INT(0, label.len);
 
     return 0;
@@ -759,7 +782,7 @@ TEST(profile_select_label_declines_on_malformed_input){
 
     ASSERT_EQ_INT(NGX_DECLINED,
                   ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
-                                                        &label));
+                                                        &label, NULL));
 
     return 0;
 }
@@ -780,7 +803,7 @@ TEST(profile_select_label_declines_on_duplicate_label){
 
     ASSERT_EQ_INT(NGX_DECLINED,
                   ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
-                                                        &label));
+                                                        &label, NULL));
 
     return 0;
 }
@@ -798,7 +821,7 @@ TEST(profile_select_label_declines_on_non_inner_list_entry){
 
     ASSERT_EQ_INT(NGX_DECLINED,
                   ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
-                                                        &label));
+                                                        &label, NULL));
     ASSERT_EQ_INT(0, label.len);
 
     return 0;
@@ -819,7 +842,7 @@ TEST(profile_select_label_declines_on_profile_mismatch){
 
     ASSERT_EQ_INT(NGX_DECLINED,
                   ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
-                                                        &label));
+                                                        &label, NULL));
     ASSERT_EQ_INT(0, label.len);
 
     return 0;
@@ -843,7 +866,7 @@ TEST(profile_select_label_declines_when_agent_not_covered){
 
     ASSERT_EQ_INT(NGX_DECLINED,
                   ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
-                                                        &label));
+                                                        &label, NULL));
     ASSERT_EQ_INT(0, label.len);
 
     return 0;
@@ -866,7 +889,7 @@ TEST(profile_select_label_accepts_when_agent_covered){
 
     ASSERT_EQ_INT(NGX_OK,
                   ngx_auth_httpsig_profile_select_label(pool, &profile, raws,
-                                                        &label));
+                                                        &label, NULL));
     ASSERT_STR_EQ(label, "sig1");
 
     return 0;
@@ -1233,6 +1256,7 @@ TEST_SUITE(profile){
     RUN(profile_agent_host_dictionary_lines_not_joined);
     RUN(profile_agent_host_dictionary_inner_list_member_is_skipped);
     RUN(profile_select_label_picks_first_tagged_entry);
+    RUN(profile_select_label_outputs_selected_entrys_keyid);
     RUN(profile_select_label_declines_on_tag_mismatch);
     RUN(profile_select_label_declines_on_malformed_input);
     RUN(profile_select_label_declines_on_duplicate_label);
