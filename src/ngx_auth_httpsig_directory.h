@@ -34,7 +34,7 @@ typedef enum {
  * directly by the HTTP layer for failures that never reach that
  * function (allow-list miss, in-flight fetch elsewhere, cache-negative
  * backoff, unparsable response body, or the subrequest itself failing).
- * Backs $httpsig_error (WP6) via
+ * Backs $httpsig_error via
  * ngx_auth_httpsig_directory_reason_name(). */
 typedef enum {
     NGX_AUTH_HTTPSIG_FETCH_OK = 0,
