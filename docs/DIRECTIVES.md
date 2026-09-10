@@ -316,6 +316,13 @@ The target host is instead threaded through separately, via
 [EXAMPLES.md](EXAMPLES.md#dynamic-key-directory) for the internal location
 this points at.
 
+This internal location must set `proxy_pass_request_headers off;` in
+addition to `proxy_set_header Host`.
+nginx subrequests share the parent request's `headers_in`, so without
+this, the client's `Cookie` / `Authorization` and similar headers are
+forwarded as-is to the allow-listed agent's fetch target host (see
+[SECURITY.md](SECURITY.md) for detail).
+
 ### auth_httpsig_key_directory_max_size
 
 ```text

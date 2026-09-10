@@ -46,6 +46,9 @@ The closures that make this safe are not optional hardening — they are the sec
   Omit `proxy_ssl_trusted_certificate` and the trust store is empty, so every fetch fails closed (safe, but nothing works).
   Omit `proxy_ssl_verify on` and certificates aren't checked at all — anyone who can intercept the connection (an on-path attacker, or the allowlisted host's own hosting provider) can then hand back arbitrary Ed25519 keys and impersonate that agent.
   Get both right, or don't bother enabling the dynamic directory.
+- **The internal fetch location must set `proxy_pass_request_headers off;`.**
+  nginx subrequests share the parent request's `headers_in`, so without this, `proxy_pass` forwards the client's `Cookie` / `Authorization` / load-balancer-supplied `X-Forwarded-For` and other headers as-is to the allow-listed agent's host.
+  `proxy_set_header Host` remains compatible with `proxy_pass_request_headers off`, so overriding the hostname is unaffected.
 - **Response size is capped** (`auth_httpsig_key_directory_max_size`, default 64 KiB, hard ceiling 256 KiB) and the response media type is checked against the profile's expected type.
   A response outside either bound is discarded (fail-open), not truncated-and-parsed.
 - **The fetch is deduplicated across the whole nginx instance**, via the shared-memory cache zone: only one in-flight fetch per host at a time across every worker; a concurrent caller reuses a still-fresh stale key set if one exists, and only sees `directory_busy` when no stale set is available. This means a burst of requests referencing an unfetched host can't be used to hammer the target with parallel subrequests.
