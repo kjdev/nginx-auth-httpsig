@@ -20,6 +20,7 @@
 
 #define NGX_HTTP_AUTH_HTTPSIG_MODE_OFF       0
 #define NGX_HTTP_AUTH_HTTPSIG_MODE_OBSERVE   1
+#define NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE   2
 
 
 typedef struct {
@@ -44,6 +45,13 @@ typedef struct {
 } ngx_http_auth_httpsig_directory_conf_t;
 
 typedef struct {
+    ngx_uint_t  status_parse_error;
+    ngx_uint_t  status_missing;
+    ngx_uint_t  status_replay;
+    ngx_uint_t  status_invalid;
+} ngx_http_auth_httpsig_status_conf_t;
+
+typedef struct {
     ngx_uint_t                              mode;
     ngx_int_t                               scheme_index; /* nginx variable
                                                            * index consulted
@@ -51,9 +59,11 @@ typedef struct {
                                                            * defaults to
                                                            * "scheme" */
     ngx_flag_t                              keyid_fallback_allow;
+    ngx_flag_t                              require;
     ngx_http_auth_httpsig_jwks_conf_t       jwks;
     ngx_http_auth_httpsig_profile_conf_t    profile;
     ngx_http_auth_httpsig_directory_conf_t  directory;
+    ngx_http_auth_httpsig_status_conf_t     status;
 } ngx_http_auth_httpsig_loc_conf_t;
 
 typedef struct {
@@ -183,7 +193,12 @@ static ngx_int_t ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
 static ngx_conf_enum_t ngx_http_auth_httpsig_mode[] = {
     { ngx_string("off"),     NGX_HTTP_AUTH_HTTPSIG_MODE_OFF },
     { ngx_string("observe"), NGX_HTTP_AUTH_HTTPSIG_MODE_OBSERVE },
+    { ngx_string("enforce"), NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE },
     { ngx_null_string, 0 }
+};
+
+static ngx_conf_num_bounds_t ngx_http_auth_httpsig_status_bounds = {
+    ngx_conf_check_num_bounds, 400, 599
 };
 
 static ngx_command_t ngx_http_auth_httpsig_commands[] = {
@@ -195,6 +210,46 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_auth_httpsig_loc_conf_t, mode),
       &ngx_http_auth_httpsig_mode },
+
+    { ngx_string("auth_httpsig_require"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, require),
+      NULL },
+
+    { ngx_string("auth_httpsig_status_parse_error"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, status.status_parse_error),
+      &ngx_http_auth_httpsig_status_bounds },
+
+    { ngx_string("auth_httpsig_status_missing"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, status.status_missing),
+      &ngx_http_auth_httpsig_status_bounds },
+
+    { ngx_string("auth_httpsig_status_replay"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, status.status_replay),
+      &ngx_http_auth_httpsig_status_bounds },
+
+    { ngx_string("auth_httpsig_status_invalid"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, status.status_invalid),
+      &ngx_http_auth_httpsig_status_bounds },
 
     { ngx_string("auth_httpsig_scheme_var"),
       NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -459,8 +514,14 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
     conf->mode = NGX_CONF_UNSET_UINT;
     conf->scheme_index = NGX_CONF_UNSET;
     conf->keyid_fallback_allow = NGX_CONF_UNSET;
+    conf->require = NGX_CONF_UNSET;
     conf->profile.expires_max = NGX_CONF_UNSET;
     conf->profile.max_skew = NGX_CONF_UNSET;
+
+    conf->status.status_parse_error = NGX_CONF_UNSET_UINT;
+    conf->status.status_missing = NGX_CONF_UNSET_UINT;
+    conf->status.status_replay = NGX_CONF_UNSET_UINT;
+    conf->status.status_invalid = NGX_CONF_UNSET_UINT;
 
     /* directory.allow is deliberately left NULL (not NGX_CONF_UNSET_PTR):
      * NULL/empty/non-empty are three distinct states
@@ -487,6 +548,21 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_value(conf->keyid_fallback_allow,
                          prev->keyid_fallback_allow, 0);
+
+    ngx_conf_merge_value(conf->require, prev->require, 0);
+
+    ngx_conf_merge_uint_value(conf->status.status_parse_error,
+                              prev->status.status_parse_error,
+                              NGX_HTTP_BAD_REQUEST);
+    ngx_conf_merge_uint_value(conf->status.status_missing,
+                              prev->status.status_missing,
+                              NGX_HTTP_FORBIDDEN);
+    ngx_conf_merge_uint_value(conf->status.status_replay,
+                              prev->status.status_replay,
+                              NGX_HTTP_TOO_MANY_REQUESTS);
+    ngx_conf_merge_uint_value(conf->status.status_invalid,
+                              prev->status.status_invalid,
+                              NGX_HTTP_FORBIDDEN);
 
     if (conf->scheme_index == NGX_CONF_UNSET) {
         conf->scheme_index = prev->scheme_index;
@@ -610,6 +686,13 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "auth_httpsig: \"auth_httpsig_mode\" is not \"off\" but no "
                            "\"auth_httpsig_jwks_file\" is configured");
+        return NGX_CONF_ERROR;
+    }
+
+    if (conf->require && conf->mode == NGX_HTTP_AUTH_HTTPSIG_MODE_OFF) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: \"auth_httpsig_require\" is \"on\" "
+                           "but \"auth_httpsig_mode\" is \"off\"");
         return NGX_CONF_ERROR;
     }
 
