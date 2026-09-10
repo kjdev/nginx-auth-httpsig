@@ -67,11 +67,18 @@ typedef struct {
 } ngx_http_auth_httpsig_loc_conf_t;
 
 typedef struct {
-    ngx_shm_zone_t                *shm_zone;
-    ngx_flag_t                     dynamic;  /* true if the dynamic key
+    ngx_shm_zone_t *shm_zone;
+    ngx_flag_t      dynamic;                 /* true if the dynamic key
                                               * directory is enabled
                                               * anywhere in the whole
                                               * config */
+    ngx_flag_t      access_used;                 /* true if
+                                                 * "auth_httpsig_mode
+                                                 * enforce" or
+                                                 * "auth_httpsig_require"
+                                                 * is set anywhere in the
+                                                 * whole config (ADR
+                                                 * 0035) */
     ngx_auth_httpsig_keys_cache_t *local_keys;  /* NULL unless dynamic */
 } ngx_http_auth_httpsig_main_conf_t;
 
@@ -170,6 +177,10 @@ static ngx_int_t ngx_http_auth_httpsig_variable_directory_hostname(
 static ngx_int_t ngx_http_auth_httpsig_variable_error(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 
+static ngx_int_t ngx_http_auth_httpsig_access_handler(
+    ngx_http_request_t *r);
+static ngx_uint_t ngx_http_auth_httpsig_deny_code(ngx_http_request_t *r,
+    ngx_uint_t code);
 static ngx_int_t ngx_http_auth_httpsig_directory_handler(
     ngx_http_request_t *r);
 static ngx_int_t ngx_http_auth_httpsig_directory_fail_open(
@@ -446,14 +457,20 @@ ngx_http_auth_httpsig_init(ngx_conf_t *cf)
 
     mcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_auth_httpsig_module);
 
-    if (!mcf->dynamic) {
-        return NGX_OK;
+    if (mcf->dynamic
+        && nxe_phase_add_handler(cf, NGX_HTTP_PREACCESS_PHASE,
+                                 NXE_PHASE_PRIO_HTTPSIG,
+                                 ngx_http_auth_httpsig_directory_handler,
+                                 "auth_httpsig") != NGX_OK)
+    {
+        return NGX_ERROR;
     }
 
-    if (nxe_phase_add_handler(cf, NGX_HTTP_PREACCESS_PHASE,
-                              NXE_PHASE_PRIO_HTTPSIG,
-                              ngx_http_auth_httpsig_directory_handler,
-                              "auth_httpsig") != NGX_OK)
+    if (mcf->access_used
+        && nxe_phase_add_handler(cf, NGX_HTTP_ACCESS_PHASE,
+                                 NXE_PHASE_PRIO_HTTPSIG,
+                                 ngx_http_auth_httpsig_access_handler,
+                                 "auth_httpsig") != NGX_OK)
     {
         return NGX_ERROR;
     }
@@ -694,6 +711,12 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                            "auth_httpsig: \"auth_httpsig_require\" is \"on\" "
                            "but \"auth_httpsig_mode\" is \"off\"");
         return NGX_CONF_ERROR;
+    }
+
+    if (conf->mode == NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE || conf->require) {
+        mcf = ngx_http_conf_get_module_main_conf(cf,
+                                                 ngx_http_auth_httpsig_module);
+        mcf->access_used = 1;
     }
 
     return NGX_CONF_OK;
@@ -1450,8 +1473,12 @@ ngx_http_auth_httpsig_directory_fail_open_release(
  * Steps up to selecting a tag-matching Signature-Input label are
  * fail-open ("not signed", ctx->result stays NOT_SIGNED); every step
  * after that is fail-closed (an ordinary declined result). Internal
- * errors also fail open rather than aborting the request: this module
- * verifies an optional signature, it never causes a 500.
+ * errors leave ctx->result at NOT_SIGNED too and never abort the
+ * request here -- evaluate() itself never causes a 500 -- but
+ * ctx->internal_error records the distinction so
+ * ngx_http_auth_httpsig_access_handler() can escalate to 500 under
+ * "enforce" (ADR 0038) instead of silently treating them as "not
+ * signed".
  */
 /*
  * r != r->main is checked first, before anything else: the fetch
@@ -2107,6 +2134,114 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     }
 
     return NGX_OK;
+}
+
+
+/*
+ * ADR 0040's clamp: with "satisfy any", ngx_http_core_access_phase()
+ * only feeds 403/401 back into its OR aggregation -- any other code
+ * finalizes the request immediately, bypassing "satisfy" entirely.
+ * Callers never pass the fixed internal-error 500 here (the handler
+ * returns it directly), so every code this function sees is subject
+ * to the clamp regardless of its default/overridden value. "satisfy
+ * all" is left untouched since ngx_http_core_access_phase() already
+ * finalizes anything but NGX_OK there regardless of this module's
+ * code.
+ */
+static ngx_uint_t
+ngx_http_auth_httpsig_deny_code(ngx_http_request_t *r, ngx_uint_t code)
+{
+    ngx_http_core_loc_conf_t *clcf;
+
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+
+    if (clcf->satisfy == NGX_HTTP_SATISFY_ANY
+        && code != NGX_HTTP_FORBIDDEN
+        && code != NGX_HTTP_UNAUTHORIZED)
+    {
+        return NGX_HTTP_FORBIDDEN;
+    }
+
+    return code;
+}
+
+
+/*
+ * ADR 0040's OK/DECLINED contract: NGX_OK is returned only for
+ * RESULT_OK (cryptographically verified), never merely because
+ * "require" is satisfied or "mode" is enforce -- "satisfy any" treats
+ * NGX_OK as an unconditional pass that skips every other access
+ * module, so a KEY_UNAVAILABLE or config-mismatch state must never
+ * produce it. Everything else that ends up denying returns the
+ * matching status code through ngx_http_auth_httpsig_deny_code() so
+ * "satisfy any" can still OR it with other access modules; anything
+ * this handler does not have an opinion on returns NGX_DECLINED.
+ *
+ * ctx->internal_error (and evaluate() returning NGX_ERROR, which only
+ * happens on pool allocation failure) is checked ahead of
+ * ctx->result: evaluate() leaves ctx->result at NOT_SIGNED for both,
+ * which would otherwise be misread as "not signed" and, under
+ * "require", turned into a 403 instead of the 500 ADR 0038 requires
+ * for internal errors. In "observe" mode (reachable here only via
+ * "require on"), an internal error still cannot be attributed to the
+ * client, so it declines rather than escalating to 500 -- "observe"
+ * never turns a verification outcome into a denial.
+ *
+ * evaluate() only returns NGX_OK with *out left NULL when the
+ * effective mode is off; ADR 0039 makes "require on" with effective
+ * mode off a startup error, so the guard above guarantees ctx is
+ * non-NULL whenever evaluate() reports NGX_OK here.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_access_handler(ngx_http_request_t *r)
+{
+    ngx_http_auth_httpsig_loc_conf_t *lcf;
+    ngx_http_auth_httpsig_ctx_t *ctx;
+
+    lcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_httpsig_module);
+
+    if (lcf->mode != NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE && !lcf->require) {
+        return NGX_DECLINED;
+    }
+
+    if (ngx_http_auth_httpsig_evaluate(r, &ctx) != NGX_OK) {
+        return lcf->mode == NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE
+               ? NGX_HTTP_INTERNAL_SERVER_ERROR : NGX_DECLINED;
+    }
+
+    if (ctx->internal_error) {
+        return lcf->mode == NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE
+               ? NGX_HTTP_INTERNAL_SERVER_ERROR : NGX_DECLINED;
+    }
+
+    switch (ctx->result) {
+
+    case NGX_AUTH_HTTPSIG_RESULT_OK:
+        return NGX_OK;
+
+    case NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED:
+        if (!lcf->require) {
+            return NGX_DECLINED;
+        }
+
+        return ngx_http_auth_httpsig_deny_code(r, lcf->status.status_missing);
+
+    case NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE:
+        return NGX_DECLINED;
+
+    default:
+        if (lcf->mode != NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE) {
+            return NGX_DECLINED;
+        }
+
+        if (ctx->result == NGX_AUTH_HTTPSIG_RESULT_PARSE_ERROR) {
+            return ngx_http_auth_httpsig_deny_code(r,
+                                                   lcf->status.
+                                                   status_parse_error);
+        }
+
+        return ngx_http_auth_httpsig_deny_code(r, lcf->status.status_invalid);
+    }
 }
 
 
