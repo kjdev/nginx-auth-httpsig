@@ -5,6 +5,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 ## [Unreleased]
 
+### Added
+
+#### Enforcement
+
+- `auth_httpsig_mode enforce`: rejects a request whose signature is present, in scope, and fails verification, with a status code selected by failure category
+- `auth_httpsig_require`: rejects a request with no in-scope signature (unsigned, or a mismatched `tag`), independent of `auth_httpsig_mode enforce`
+- `auth_httpsig_status_parse_error`, `auth_httpsig_status_missing`, `auth_httpsig_status_replay`, `auth_httpsig_status_invalid` directives to override the default status code per failure category (`auth_httpsig_status_replay` is validated today but has no effect until replay detection ships)
+- `satisfy any` support: this module's rejection status is clamped to `403` (unless already `403`/`401`) so it participates in nginx's OR aggregation with other access-phase modules
+- `auth_httpsig_key_rotation_retry_ttl`: rate-limited forced key-directory refetch, per host, to rescue a signature whose `keyid` doesn't match the cached key set because the signer just rotated its key
+
+### Security
+
+- `KEY_UNAVAILABLE` outcomes (including `agent_not_allowed` and every `directory_*` fetch failure) always stay fail-open, even under `auth_httpsig_mode enforce` and `auth_httpsig_require`
+
 ## [0.1.0] - 2026-09-10
 
 ### Added
