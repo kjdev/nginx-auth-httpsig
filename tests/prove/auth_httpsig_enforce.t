@@ -342,3 +342,44 @@ GET /t
 --- error_code: 401
 --- response_headers_like
 WWW-Authenticate: Basic realm="restricted"
+
+
+
+=== TEST 10: enforce mode grants access on a valid signature alone (RESULT_OK maps to NGX_OK, short-circuiting the other satisfy-any check)
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        satisfy any;
+        auth_basic          "restricted";
+        auth_basic_user_file $TEST_NGINX_DATA_DIR/htpasswd;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n"
+--- request
+GET /t
+--- error_code: 200

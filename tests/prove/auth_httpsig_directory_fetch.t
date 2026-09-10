@@ -379,6 +379,36 @@ $HttpConfig .= <<'_EOC_';
     }
 _EOC_
 
+# Second mutable key-directory fixture, for the rotation-rescue test group
+# below. Unlike $RotateFile above -- whose rotation test lets the cache
+# entry expire first, exercising an ordinary TTL refetch -- this one must
+# still be a fresh, non-expired cache entry when the key rotates, so that
+# the unresolved keyid is what triggers the forced refetch rather than a
+# TTL boundary. $RotationRescueConfig below gives its location a cache
+# TTL long enough to guarantee that.
+our $RotateFile2 = "$RotateDir/rotation-rescue.json";
+
+open(my $rotate2_fh, '>', $RotateFile2) or die "open $RotateFile2: $!";
+print $rotate2_fh '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+close $rotate2_fh;
+
+$HttpConfig .= <<"_EOC_";
+    server {
+        listen  127.0.0.1:18464 ssl;
+        server_name  directory-rotation-rescue;
+
+        ssl_certificate      \$TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  \$TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  \$TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            alias  $RotateFile2;
+        }
+    }
+_EOC_
+
 our $MainConfig = <<'_EOC_';
     auth_httpsig_mode                   observe;
     auth_httpsig_key_directory_request  /httpsig_fetch;
@@ -559,6 +589,171 @@ our $FallbackConfig = <<'_EOC_';
     }
 _EOC_
 
+# Self-contained scope for the rotation-rescue test group: a cache TTL
+# well past this group's run time keeps the directory-rotation-rescue
+# entry cached and unexpired across the PUT that rotates its key, so the
+# final request's unresolved keyid is settled by a forced refetch instead
+# of an ordinary TTL-expiry refetch.
+our $RotationRescueConfig = <<"_EOC_";
+    auth_httpsig_mode                   observe;
+    auth_httpsig_key_directory_request  /httpsig_fetch;
+    auth_httpsig_key_cache_min_ttl      30;
+    auth_httpsig_agent_allow
+        127.0.0.1:18464;
+
+    location /t_rotation_rescue {
+        default_type       text/plain;
+        sub_filter_types    text/plain;
+        sub_filter          'RESPONSE_MARKER'  'verified:\$httpsig_verified error:\$httpsig_error';
+        sub_filter_once      on;
+        proxy_pass  http://127.0.0.1:18449/marker;
+    }
+
+    location = /rotate2 {
+        dav_methods  PUT;
+        alias  $RotateFile2;
+    }
+
+    location = /httpsig_fetch {
+        internal;
+        auth_httpsig_mode                 off;
+        auth_httpsig_agent_allow          off;
+        resolver                          1.1.1.1;
+        subrequest_output_buffer_size     128k;
+        proxy_ssl_verify                off;
+        proxy_ssl_server_name           on;
+        proxy_ssl_name                  \$httpsig_directory_hostname;
+        proxy_set_header                Host \$httpsig_directory_host;
+        proxy_pass  https://\$httpsig_directory_host/.well-known/http-message-signatures-directory;
+    }
+_EOC_
+
+# Third mutable key-directory fixture: unlike $RotateFile2 (rotated to a
+# new *valid* key), this one is rewritten to a malformed document, so the
+# forced refetch that a rotation rescue triggers itself fails to parse.
+# Exercises the ctx->jwks.len == 0 guard in
+# ngx_http_auth_httpsig_directory_done() (the fetch itself succeeds with
+# a 200, so ngx_http_auth_httpsig_directory_fail_open()'s sibling guard
+# is not reached here) that must leave the prior stale-but-valid key set
+# in place rather than clobber it when the rescue attempt comes back
+# empty-handed.
+our $RotateFile3 = "$RotateDir/rotation-rescue-fail.json";
+
+open(my $rotate3_fh, '>', $RotateFile3) or die "open $RotateFile3: $!";
+print $rotate3_fh '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"xCpJVzjaTB6A8s8QGZO8OuhOsE7XVdsUw82inWca4f0","kid":"PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA"}]}';
+close $rotate3_fh;
+
+$HttpConfig .= <<"_EOC_";
+    server {
+        listen  127.0.0.1:18465 ssl;
+        server_name  directory-rotation-rescue-fail;
+
+        ssl_certificate      \$TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  \$TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  \$TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            alias  $RotateFile3;
+        }
+    }
+_EOC_
+
+# Self-contained scope for the rotation-rescue-refetch-failure test group,
+# mirroring $RotationRescueConfig's cache-TTL reasoning.
+our $RotationRescueFailConfig = <<"_EOC_";
+    auth_httpsig_mode                   observe;
+    auth_httpsig_key_directory_request  /httpsig_fetch;
+    auth_httpsig_key_cache_min_ttl      30;
+    auth_httpsig_agent_allow
+        127.0.0.1:18465;
+
+    location /t_rotation_rescue_fail {
+        default_type       text/plain;
+        sub_filter_types    text/plain;
+        sub_filter          'RESPONSE_MARKER'  'verified:\$httpsig_verified error:\$httpsig_error';
+        sub_filter_once      on;
+        proxy_pass  http://127.0.0.1:18449/marker;
+    }
+
+    location = /rotate3 {
+        dav_methods  PUT;
+        alias  $RotateFile3;
+    }
+
+    location = /httpsig_fetch {
+        internal;
+        auth_httpsig_mode                 off;
+        auth_httpsig_agent_allow          off;
+        resolver                          1.1.1.1;
+        subrequest_output_buffer_size     128k;
+        proxy_ssl_verify                off;
+        proxy_ssl_server_name           on;
+        proxy_ssl_name                  \$httpsig_directory_hostname;
+        proxy_set_header                Host \$httpsig_directory_host;
+        proxy_pass  https://\$httpsig_directory_host/.well-known/http-message-signatures-directory;
+    }
+_EOC_
+
+# Fourth key-directory fixture, for the rotation-rescue-static test group
+# below: fixed content (never rotated) holding only keyid B (ed25519-key2),
+# while the protected location's auth_httpsig_jwks_file holds keyid A
+# (ed25519-key, see $RotateFile2/$HttpConfig above). Verifies that a
+# rotation-rescue refetch (ADR 0037) is skipped when the unresolved keyid
+# is already covered by the static JWKS instead.
+$HttpConfig .= <<'_EOC_';
+    server {
+        listen  127.0.0.1:18466 ssl;
+        server_name  directory-rotation-rescue-static;
+
+        ssl_certificate      $TEST_NGINX_DATA_DIR/directory-cert.pem;
+        ssl_certificate_key  $TEST_NGINX_DATA_DIR/directory-key.pem;
+
+        access_log  $TEST_NGINX_SERVROOT/logs/error.log  directory_fetch;
+
+        location = /.well-known/http-message-signatures-directory {
+            default_type  application/http-message-signatures-directory+json;
+            return 200 '{"keys":[{"kty":"OKP","crv":"Ed25519","x":"y1f98y7aXG3ZAtYj85_YVsQib4MHknBtmiERGjF5T-I","kid":"ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc"}]}';
+        }
+    }
+_EOC_
+
+# Self-contained scope for the rotation-rescue-static test group: the
+# protected location pairs the dynamic directory above (keyid B only) with
+# a static auth_httpsig_jwks_file holding keyid A, so a request signed with
+# keyid A must verify via the static JWKS without ever forcing a refetch of
+# the dynamic directory.
+our $RotationRescueStaticConfig = <<'_EOC_';
+    auth_httpsig_mode                   observe;
+    auth_httpsig_key_directory_request  /httpsig_fetch;
+    auth_httpsig_key_cache_min_ttl      30;
+    auth_httpsig_agent_allow
+        127.0.0.1:18466;
+
+    location /t_rotation_rescue_static {
+        default_type       text/plain;
+        sub_filter_types    text/plain;
+        sub_filter          'RESPONSE_MARKER'  'verified:$httpsig_verified error:$httpsig_error';
+        sub_filter_once      on;
+        auth_httpsig_jwks_file  $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+        proxy_pass  http://127.0.0.1:18449/marker;
+    }
+
+    location = /httpsig_fetch {
+        internal;
+        auth_httpsig_mode                 off;
+        auth_httpsig_agent_allow          off;
+        resolver                          1.1.1.1;
+        subrequest_output_buffer_size     128k;
+        proxy_ssl_verify                off;
+        proxy_ssl_server_name           on;
+        proxy_ssl_name                  $httpsig_directory_hostname;
+        proxy_set_header                Host $httpsig_directory_host;
+        proxy_pass  https://$httpsig_directory_host/.well-known/http-message-signatures-directory;
+    }
+_EOC_
+
 # $agent is either a bare host (legacy behavior: one line, quoted
 # sf-string form, e.g. "127.0.0.1:18443") or an arrayref of raw
 # Signature-Agent field values, one per header line, e.g.
@@ -600,8 +795,8 @@ sub sign_headers {
 }
 
 # Cache-TTL-reuse/refetch assertions depend on TEST
-# 1/2/4/5/8/9/10/11/13/14/15/16 running in file order; Test::Nginx shuffles
-# block order by default.
+# 1/2/4/5/8/9/10/11/13/14/15/16/29/30/31/32/33/34/35 running in file order;
+# Test::Nginx shuffles block order by default.
 no_shuffle();
 
 run_tests();
@@ -1047,3 +1242,148 @@ GET /t_fallback_off
 --- error_code: 200
 --- response_body chomp
 verified:0 error:keyid_not_thumbprint
+
+
+
+=== TEST 29: populate a fresh cache entry ahead of the rotation-rescue test below
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18464', '/t_rotation_rescue')
+--- request
+GET /t_rotation_rescue
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18464 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18464 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 30: a PUT request rotates the rotation-rescue origin's directory key on disk, while TEST 29's cache entry is still within its TTL
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueConfig
+--- request
+PUT /rotate2
+{"keys":[{"kty":"OKP","crv":"Ed25519","x":"y1f98y7aXG3ZAtYj85_YVsQib4MHknBtmiERGjF5T-I","kid":"ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc"}]}
+--- error_code: 204
+
+
+
+=== TEST 31: a keyid unresolved against a still-fresh cache entry is rescued by a forced refetch and verifies against the rotated key
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18464', '/t_rotation_rescue',
+    'tests/prove/data/ed25519-key2.pem', 'ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc')
+--- request
+GET /t_rotation_rescue
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18464 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18464 GET /.well-known/http-message-signatures-directory
+18464 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 32: populate a fresh cache entry ahead of the rotation-rescue-failure test below
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueFailConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18465', '/t_rotation_rescue_fail')
+--- request
+GET /t_rotation_rescue_fail
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18465 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18465 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 33: a PUT request replaces the rotation-rescue-fail origin's directory with a malformed document, while TEST 32's cache entry is still within its TTL
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueFailConfig
+--- request
+PUT /rotate3
+not a valid key directory document
+--- error_code: 204
+
+
+
+=== TEST 34: a keyid unresolved against a still-fresh cache entry triggers a forced refetch that itself fails; the request falls open as unknown_keyid (not key_unavailable, since the stale-but-valid cache entry is still there) without disturbing the cached entry
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueFailConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18465', '/t_rotation_rescue_fail',
+    'tests/prove/data/ed25519-key2.pem', 'ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc')
+--- request
+GET /t_rotation_rescue_fail
+--- error_code: 200
+--- response_body chomp
+verified:0 error:unknown_keyid
+--- grep_error_log eval: qr/18465 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18465 GET /.well-known/http-message-signatures-directory
+18465 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 35: the original key from TEST 32's cache entry still verifies after the failed rescue refetch in TEST 34, showing the stale-but-valid jwks was not clobbered
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueFailConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18465', '/t_rotation_rescue_fail')
+--- request
+GET /t_rotation_rescue_fail
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18465 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18465 GET /.well-known/http-message-signatures-directory
+18465 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 36: populate a fresh cache entry ahead of the rotation-rescue-static test below (dynamic directory holds only keyid B)
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueStaticConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18466', '/t_rotation_rescue_static',
+    'tests/prove/data/ed25519-key2.pem', 'ETcfa8hWhW-wlBzsJe5KvDD-ZfofYIfdTVyoIuVXwkc')
+--- request
+GET /t_rotation_rescue_static
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18466 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18466 GET /.well-known/http-message-signatures-directory
+
+
+
+=== TEST 37: a keyid resolved only via the static auth_httpsig_jwks_file does not trigger ADR 0037's rotation-rescue refetch of the dynamic directory
+--- http_config eval: $::HttpConfig
+--- config eval: $::RotationRescueStaticConfig
+--- more_headers eval
+use HttpSig;
+main::sign_headers('127.0.0.1:18466', '/t_rotation_rescue_static')
+--- request
+GET /t_rotation_rescue_static
+--- error_code: 200
+--- response_body chomp
+verified:1 error:
+--- grep_error_log eval: qr/18466 GET \/\.well-known\/http-message-signatures-directory\S*/
+--- grep_error_log_out
+18466 GET /.well-known/http-message-signatures-directory
