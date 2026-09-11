@@ -441,7 +441,8 @@ ngx_auth_httpsig_profile_join_lines(ngx_pool_t *pool,
 ngx_int_t
 ngx_auth_httpsig_profile_select_label(ngx_pool_t *pool,
     const ngx_auth_httpsig_profile_t *profile,
-    const ngx_array_t *signature_input, ngx_str_t *label)
+    const ngx_array_t *signature_input, ngx_str_t *label,
+    ngx_str_t *keyid)
 {
     ngx_auth_httpsig_sfv_dictionary_t *dict;
     ngx_auth_httpsig_sfv_dict_entry_t *entry;
@@ -523,6 +524,10 @@ ngx_auth_httpsig_profile_select_label(ngx_pool_t *pool,
     }
 
     *label = entry->key;
+
+    if (keyid != NULL) {
+        *keyid = sig.keyid;
+    }
 
     return NGX_OK;
 }

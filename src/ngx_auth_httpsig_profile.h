@@ -174,8 +174,15 @@ ngx_int_t ngx_auth_httpsig_profile_match(
  * label that verification will later select, rather than guessing
  * independently.
  *
+ * `keyid` is an optional (nullable) out argument: on NGX_OK it is set
+ * to the selected entry's `keyid` parameter, so the same fetch path
+ * can check whether the cached key directory already covers it
+ * without re-parsing Signature-Input. On NGX_DECLINED or NGX_ERROR
+ * it is left untouched.
+ *
  * Return value:
- *   NGX_OK        `*label` holds the selected label.
+ *   NGX_OK        `*label` (and `*keyid`, if non-NULL) holds the
+ *                 selected entry's data.
  *   NGX_DECLINED  no line, no entry tagged for `profile`, the field
  *                 does not parse as a well-formed dictionary, or the
  *                 entry fails ngx_auth_httpsig_profile_match().
@@ -184,7 +191,8 @@ ngx_int_t ngx_auth_httpsig_profile_match(
  */
 ngx_int_t ngx_auth_httpsig_profile_select_label(ngx_pool_t *pool,
     const ngx_auth_httpsig_profile_t *profile,
-    const ngx_array_t *signature_input, ngx_str_t *label);
+    const ngx_array_t *signature_input, ngx_str_t *label,
+    ngx_str_t *keyid);
 
 /*
  * Extracts the lowercased host (no port) of a Signature-Agent field,

@@ -13,6 +13,11 @@ See also: [INSTALL](INSTALL.md) · [EXAMPLES](EXAMPLES.md) ·
 | [auth_httpsig_mode](#auth_httpsig_mode) | http, server, location |
 | [auth_httpsig_profile](#auth_httpsig_profile) | http, server, location |
 | [auth_httpsig_scheme_var](#auth_httpsig_scheme_var) | http, server, location |
+| [auth_httpsig_require](#auth_httpsig_require) | http, server, location |
+| [auth_httpsig_status_parse_error](#auth_httpsig_status_parse_error) | http, server, location |
+| [auth_httpsig_status_missing](#auth_httpsig_status_missing) | http, server, location |
+| [auth_httpsig_status_replay](#auth_httpsig_status_replay) | http, server, location |
+| [auth_httpsig_status_invalid](#auth_httpsig_status_invalid) | http, server, location |
 | [auth_httpsig_jwks_file](#auth_httpsig_jwks_file) | http, server, location |
 | [auth_httpsig_agent_allow](#auth_httpsig_agent_allow) | http, server, location |
 | [auth_httpsig_key_directory_request](#auth_httpsig_key_directory_request) | http, server, location |
@@ -20,6 +25,7 @@ See also: [INSTALL](INSTALL.md) · [EXAMPLES](EXAMPLES.md) ·
 | [auth_httpsig_key_cache_zone](#auth_httpsig_key_cache_zone) | http |
 | [auth_httpsig_key_cache_min_ttl](#auth_httpsig_key_cache_min_ttl--auth_httpsig_key_cache_max_ttl) | http, server, location |
 | [auth_httpsig_key_cache_max_ttl](#auth_httpsig_key_cache_min_ttl--auth_httpsig_key_cache_max_ttl) | http, server, location |
+| [auth_httpsig_key_rotation_retry_ttl](#auth_httpsig_key_rotation_retry_ttl) | http, server, location |
 | [auth_httpsig_expires_max](#auth_httpsig_expires_max) | http, server, location |
 | [auth_httpsig_max_skew](#auth_httpsig_max_skew) | http, server, location |
 | [auth_httpsig_keyid_fallback_allow](#auth_httpsig_keyid_fallback_allow) | http, server, location |
@@ -36,21 +42,33 @@ exception noted under `auth_httpsig_agent_allow`.
 ### auth_httpsig_mode
 
 ```text
-Syntax:  auth_httpsig_mode off | observe;
+Syntax:  auth_httpsig_mode off | observe | enforce;
 Default: auth_httpsig_mode off;
 Context: http, server, location
 ```
 
 Turns verification on for a block.
-`observe` verifies only requests that are in scope for the active
-`auth_httpsig_profile`; a signed request with no Signature-Input label
-tagged for that profile gets no verdict, the same as an unsigned request.
-For in-scope requests it exposes the outcome through `$httpsig_*`.
-It never rejects the request based on the outcome — that is a design
-invariant, not a stopgap: unsigned or out-of-scope requests are always
-treated as "no verdict", never as a failure (see [SECURITY.md](SECURITY.md)).
-An `enforce` mode that can reject on a failed verification is planned for a
-later release; there is no directive-level way to reject requests today.
+`observe` and `enforce` both verify only requests that are in scope for
+the active `auth_httpsig_profile`; a signed request with no
+Signature-Input label tagged for that profile gets no verdict, the same
+as an unsigned request.
+For in-scope requests, both modes expose the outcome through
+`$httpsig_*`.
+
+`observe` never rejects the request based on the outcome — that is a
+design invariant, not a stopgap: unsigned or out-of-scope requests, and
+a failed verification, are always treated as "no verdict" or "not
+grounds to deny" (see [SECURITY.md](SECURITY.md#fail-open-by-design)).
+
+`enforce` rejects a request whose signature is present, in scope, and
+fails verification, with a status code selected by failure category
+(see `auth_httpsig_status_parse_error` and `auth_httpsig_status_invalid`
+below).
+An unsigned or out-of-scope request still passes through under
+`enforce` alone, and so does a `key_unavailable` outcome (a
+key-directory fetch problem) — pair `enforce` with
+`auth_httpsig_require` to also reject a request that never presented an
+in-scope signature at all.
 
 ### auth_httpsig_profile
 
@@ -89,6 +107,133 @@ operator running this module behind a TLS-terminating load balancer that
 forwards `X-Forwarded-Proto` points this at a `map`-defined variable
 instead of trying to override `$scheme` itself.
 See [EXAMPLES.md](EXAMPLES.md#behind-a-tls-terminating-load-balancer).
+
+## Enforcement
+
+`auth_httpsig_mode enforce` and `auth_httpsig_require` are independent
+switches that combine additively: `enforce` rejects a signature that is
+present but fails verification, `require` additionally rejects the
+absence of an in-scope signature.
+Either works without the other — `require on` with `mode observe`
+rejects only a missing/out-of-scope signature while still fail-opening
+a failed verification; `enforce` with `require` left at its default
+(`off`) rejects only a present-and-failed signature while still passing
+an unsigned request through.
+A location with `require on` requires an effective (merged)
+`auth_httpsig_mode` other than `off` — nginx refuses to start otherwise,
+since silently ignoring `require` would let unsigned traffic through
+while the operator believes it is being rejected.
+See [EXAMPLES.md](EXAMPLES.md#enforcing-signatures) for worked
+configurations.
+
+### auth_httpsig_require
+
+```text
+Syntax:  auth_httpsig_require on | off;
+Default: auth_httpsig_require off;
+Context: http, server, location
+```
+
+Rejects a request with no in-scope `Signature-Input` label — unsigned,
+or signed under a `tag` that doesn't match the active
+`auth_httpsig_profile` — with the status from `auth_httpsig_status_missing`.
+This is independent of whether verification of a present signature
+succeeds: a request whose signature is present but fails verification
+is governed by `auth_httpsig_mode enforce`, not by this directive.
+A `key_unavailable` outcome (a key-directory fetch problem) is not
+treated as "missing" — a signature was present, so `require` is
+satisfied, and the request fails open exactly as it would without
+`require` (see [SECURITY.md](SECURITY.md#fail-open-by-design)).
+
+Because an out-of-scope signature is indistinguishable from an unsigned
+request at this layer, `require on` rejects both the same way, and
+leaves `$httpsig_verified` and `$httpsig_error` unset on the rejected
+response — check the response status code, not `$httpsig_error`, to
+recognize this case (see
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#first-remember-this-module-mostly-fails-open)).
+
+### auth_httpsig_status_parse_error
+
+```text
+Syntax:  auth_httpsig_status_parse_error code;
+Default: auth_httpsig_status_parse_error 400;
+Context: http, server, location
+```
+
+Status code `auth_httpsig_mode enforce` returns when
+`Signature-Input`/`Signature`/`Signature-Agent` fails to parse as
+Structured Fields (`$httpsig_error` = `parse_error`).
+`code` must be between `400` and `599` (checked at configuration time).
+
+### auth_httpsig_status_missing
+
+```text
+Syntax:  auth_httpsig_status_missing code;
+Default: auth_httpsig_status_missing 403;
+Context: http, server, location
+```
+
+Status code `auth_httpsig_require` returns when a request has no
+in-scope signature.
+`code` must be between `400` and `599`.
+
+### auth_httpsig_status_replay
+
+```text
+Syntax:  auth_httpsig_status_replay code;
+Default: auth_httpsig_status_replay 429;
+Context: http, server, location
+```
+
+Reserved for a future replay-rejection response.
+This module has no nonce store or replay detection yet (see
+[SECURITY.md](SECURITY.md#replay)), so nothing currently returns this
+code; it is validated and stored today so a later release that adds
+replay detection does not need a new directive.
+
+### auth_httpsig_status_invalid
+
+```text
+Syntax:  auth_httpsig_status_invalid code;
+Default: auth_httpsig_status_invalid 403;
+Context: http, server, location
+```
+
+Status code `auth_httpsig_mode enforce` returns when a signature is
+present and in scope but fails verification for any reason other than a
+parse error — `unknown_keyid`, `keyid_not_thumbprint`,
+`signature_mismatch`, `expired`, or `profile_mismatch`.
+`code` must be between `400` and `599`.
+Under `auth_httpsig_mode enforce`, an internal evaluation error
+(`$httpsig_error` = `internal`) always returns `500` regardless of this
+or any other status directive.
+With `mode observe`, the same error fails open regardless of
+`auth_httpsig_require`, like every other internal condition described
+in [SECURITY.md](SECURITY.md#fail-open-by-design).
+
+### `satisfy any` and status codes
+
+With `satisfy any`, nginx OR-aggregates this module's rejection against
+every other access-phase module in the block, but only `403` and `401`
+participate in that aggregation — any other code would otherwise
+finalize the request immediately and skip the other modules entirely.
+To keep every rejection compatible with `satisfy any`, this module
+clamps its own status code to `403` whenever `satisfy any` is active and
+the code it would otherwise return is neither `403` nor `401`; this
+clamp applies even when this module is the only access-phase directive
+in the block, so an operator using `satisfy any` sees `403` where a
+`satisfy all` (default) configuration would show `400`/`429`/a custom
+override.
+`$httpsig_error` always keeps its precise value regardless of the
+clamp — only the HTTP response code is affected.
+The fixed `500` for `$httpsig_error` = `internal` under `enforce` is
+never clamped; that error finalizes the request immediately, bypassing
+`satisfy any`.
+A `401` from another access-phase module (e.g. `auth_basic`) always
+wins over this module's (possibly clamped) `403` once both have run,
+and the final response then carries that module's `WWW-Authenticate`
+header — this module never sends `WWW-Authenticate`, even when a status
+directive above is overridden to `401`.
 
 ## Key sources
 
@@ -171,6 +316,13 @@ The target host is instead threaded through separately, via
 [EXAMPLES.md](EXAMPLES.md#dynamic-key-directory) for the internal location
 this points at.
 
+This internal location must set `proxy_pass_request_headers off;` in
+addition to `proxy_set_header Host`.
+nginx subrequests share the parent request's `headers_in`, so without
+this, the client's `Cookie` / `Authorization` and similar headers are
+forwarded as-is to the allow-listed agent's fetch target host (see
+[SECURITY.md](SECURITY.md) for detail).
+
 ### auth_httpsig_key_directory_max_size
 
 ```text
@@ -244,6 +396,37 @@ It is deliberately independent of a signature's own `expires` parameter,
 which is still checked on every request regardless of cache state —
 conflating the two would mean a cached key set could keep verifying
 signatures a rotated key should no longer accept.
+
+### auth_httpsig_key_rotation_retry_ttl
+
+```text
+Syntax:  auth_httpsig_key_rotation_retry_ttl time;
+Default: auth_httpsig_key_rotation_retry_ttl 5m;
+Context: http, server, location
+```
+
+Rate limit, per key-directory host, on a forced refetch triggered when
+a cached key directory doesn't cover an incoming request's `keyid` —
+and no static `auth_httpsig_jwks_file` entry covers it either.
+A signer that just rotated its key looks identical, from a single
+request, to an unknown or malicious `keyid`; this forced refetch lets a
+legitimately-rotated key start verifying again without waiting for the
+normal cache TTL to expire, while the per-host limit keeps a stream of
+bogus `keyid`s from forcing a fetch on every single request.
+Only one such rescue fetch happens per host within this TTL; a second
+unmatched `keyid` for the same host inside the window is not rescued.
+If a stale-but-parseable JWKS is still cached, this resolves to
+`unknown_keyid`, which `auth_httpsig_mode enforce` rejects as a failed
+verification (see [SECURITY.md](SECURITY.md#fail-open-by-design)); only
+when no usable JWKS is available at all does it fall back to the
+`key_unavailable` fail-open path.
+This is independent of `auth_httpsig_key_cache_min_ttl` /
+`auth_httpsig_key_cache_max_ttl`, which govern how long a *successfully
+fetched* key set is trusted, not how often a forced refetch may be
+attempted.
+Must not be `0` (checked at configuration time) — `0` would let a
+stream of unknown `keyid`s force an unlimited rate of refetches against
+the target host.
 
 ## Time-window validation
 
@@ -368,5 +551,8 @@ See [EXAMPLES.md](EXAMPLES.md#dynamic-key-directory).
 
 Every `directory_*` value and `key_unavailable` are fail-open outcomes: the
 request proceeds with no verdict, exactly as if it were unsigned.
+This holds regardless of `auth_httpsig_mode` or `auth_httpsig_require` —
+neither enforce nor require turns a `key_unavailable` or `directory_*`
+outcome into a rejection (see `auth_httpsig_require` above).
 They exist purely for operational diagnosis (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)), not to signal a rejection.

@@ -924,6 +924,148 @@ TEST(cache_lookup_node_alloc_failure_reports_unavailable_without_fetching)
 }
 
 
+TEST(cache_claim_rotation_refetch_rejects_null_arguments)
+{
+    ngx_auth_httpsig_cache_ctx_t *ctx;
+    ngx_str_t host;
+
+    host = str("rotation-null.example.com");
+
+    ctx = cache_new(pool, 65536, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ_INT(NGX_ERROR,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(NULL, &host, 1000,
+            100));
+    ASSERT_EQ_INT(NGX_ERROR,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(ctx, NULL, 1000, 100));
+
+    cache_free(ctx);
+    return 0;
+}
+
+
+TEST(cache_claim_rotation_refetch_declines_without_a_node)
+{
+    ngx_auth_httpsig_cache_ctx_t *ctx;
+    ngx_str_t host;
+
+    host = str("rotation-no-node.example.com");
+
+    ctx = cache_new(pool, 65536, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    /* Unlike _lookup()'s CLAIMED, this must never create a node for a
+     * host it has never seen a successful fetch for. */
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(ctx, &host, 1000,
+            100));
+
+    cache_free(ctx);
+    return 0;
+}
+
+
+TEST(cache_claim_rotation_refetch_declines_while_already_fetching)
+{
+    ngx_auth_httpsig_cache_ctx_t *ctx;
+    ngx_str_t host, jwks;
+
+    host = str("rotation-busy.example.com");
+    jwks = str("{\"keys\":[\"a\"]}");
+
+    ctx = cache_new(pool, 65536, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, 100, NULL));
+
+    /* An ordinary refetch (or a concurrent rotation rescue) already
+     * holds the fetch right; this must not steal it. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(ctx, &host, 1000,
+            100));
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(ctx, &host, 1001,
+            100));
+
+    cache_free(ctx);
+    return 0;
+}
+
+
+TEST(cache_claim_rotation_refetch_succeeds_and_keeps_jwks)
+{
+    ngx_auth_httpsig_cache_ctx_t *ctx;
+    ngx_str_t host, jwks, out;
+    ngx_auth_httpsig_cache_status_t status;
+
+    host = str("rotation-ok.example.com");
+    jwks = str("{\"keys\":[\"a\"]}");
+
+    ctx = cache_new(pool, 65536, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, 100, NULL));
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(ctx, &host, 1000,
+            100));
+
+    /* The claim itself must not clobber the still-unexpired jwks: a
+     * concurrent request must keep seeing it as a stale-but-served HIT
+     * (ADR 0015) for the length of this in-flight refetch, exactly as
+     * it would for an ordinary in-flight refetch (BUSY-with-stale). */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_lookup(ctx, pool, &host, 1001, &out, &status,
+            NULL));
+    ASSERT_EQ_INT(NGX_AUTH_HTTPSIG_CACHE_HIT, status);
+    ASSERT_STR_EQ(out, "{\"keys\":[\"a\"]}");
+
+    cache_free(ctx);
+    return 0;
+}
+
+
+TEST(cache_claim_rotation_refetch_rate_limits_retries)
+{
+    ngx_auth_httpsig_cache_ctx_t *ctx;
+    ngx_str_t host, jwks;
+
+    host = str("rotation-rate-limit.example.com");
+    jwks = str("{\"keys\":[\"a\"]}");
+
+    ctx = cache_new(pool, 65536, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 5000, 100, NULL));
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(ctx, &host, 1000,
+            100));
+
+    /* The first claim's refetch fails; the fetch right is released, but
+     * forced_refetch_at must still gate the next rotation claim even
+     * though fetching is clear again. */
+    ngx_auth_httpsig_cache_release(ctx, &host, 1050);
+
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(ctx, &host, 1099,
+            100));
+
+    /* retry_ttl has now elapsed since the first claim: a new one is
+     * allowed. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_cache_claim_rotation_refetch(ctx, &host, 1100,
+            100));
+
+    cache_free(ctx);
+    return 0;
+}
+
+
 TEST_SUITE(cache)
 {
     RUN(cache_lookup_claims_on_miss);
@@ -950,4 +1092,9 @@ TEST_SUITE(cache)
     RUN(cache_store_jwks_alloc_failure_backs_off_retry);
     RUN(cache_store_after_eviction_generation_differs_from_evicted_node);
     RUN(cache_lookup_node_alloc_failure_reports_unavailable_without_fetching);
+    RUN(cache_claim_rotation_refetch_rejects_null_arguments);
+    RUN(cache_claim_rotation_refetch_declines_without_a_node);
+    RUN(cache_claim_rotation_refetch_declines_while_already_fetching);
+    RUN(cache_claim_rotation_refetch_succeeds_and_keeps_jwks);
+    RUN(cache_claim_rotation_refetch_rate_limits_retries);
 }
