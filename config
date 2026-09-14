@@ -45,7 +45,7 @@ fi
 #
 # Layer order (bottom to top):
 #   sfv -> base -> verify -> keys -> profile -> directory -> cache
-#   -> module entry
+#   -> nonce_store -> module entry
 ngx_module_type=HTTP
 ngx_module_name="ngx_http_auth_httpsig_module $nxe_phase_module_name"
 ngx_module_deps="$nxe_jwx_module_deps $nxe_phase_module_deps"
@@ -62,6 +62,7 @@ ngx_module_srcs="\
   $ngx_addon_dir/src/ngx_auth_httpsig_profile.c \
   $ngx_addon_dir/src/ngx_auth_httpsig_directory.c \
   $ngx_addon_dir/src/ngx_auth_httpsig_cache.c \
+  $ngx_addon_dir/src/ngx_auth_httpsig_nonce_store.c \
   $ngx_addon_dir/src/ngx_http_auth_httpsig_module.c"
 ngx_module_libs="$nxe_json_module_libs $nxe_jwx_module_libs $nxe_phase_module_libs"
 
