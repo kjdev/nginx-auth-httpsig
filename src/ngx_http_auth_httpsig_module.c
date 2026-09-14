@@ -14,6 +14,7 @@
 #include "ngx_auth_httpsig_directory.h"
 #include "ngx_auth_httpsig_keys.h"
 #include "ngx_auth_httpsig_keys_cache.h"
+#include "ngx_auth_httpsig_nonce_store.h"
 #include "ngx_auth_httpsig_profile.h"
 #include "ngx_auth_httpsig_verify.h"
 
@@ -21,6 +22,10 @@
 #define NGX_HTTP_AUTH_HTTPSIG_MODE_OFF       0
 #define NGX_HTTP_AUTH_HTTPSIG_MODE_OBSERVE   1
 #define NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE   2
+
+#define NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF     0
+#define NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_SHM     1
+#define NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_REDIS   2
 
 
 typedef struct {
@@ -53,14 +58,22 @@ typedef struct {
 } ngx_http_auth_httpsig_status_conf_t;
 
 typedef struct {
-    ngx_uint_t                              mode;
-    ngx_int_t                               scheme_index; /* nginx variable
+    ngx_uint_t  mode;
+    ngx_int_t   scheme_index;                             /* nginx variable
                                                            * index consulted
                                                            * for @scheme;
                                                            * defaults to
                                                            * "scheme" */
-    ngx_flag_t                              keyid_fallback_allow;
-    ngx_flag_t                              require;
+    ngx_flag_t  keyid_fallback_allow;
+    ngx_flag_t  require;
+    ngx_uint_t  nonce_store;                             /* off/shm/redis
+                                                          * selector; each
+                                                          * location
+                                                          * inherits the
+                                                          * parent's
+                                                          * choice like
+                                                          * "mode" (ADR
+                                                          * 0051) */
     ngx_http_auth_httpsig_jwks_conf_t       jwks;
     ngx_http_auth_httpsig_profile_conf_t    profile;
     ngx_http_auth_httpsig_directory_conf_t  directory;
@@ -81,6 +94,15 @@ typedef struct {
                                                  * whole config (ADR
                                                  * 0035) */
     ngx_auth_httpsig_keys_cache_t *local_keys;  /* NULL unless dynamic */
+
+    ngx_uint_t                     nonce_store_backend; /* the single backend selected by
+                                                         * "auth_httpsig_nonce_store" across
+                                                         * the whole config; OFF (0, the
+                                                         * pcalloc default) means "none
+                                                         * selected yet", checked/set while
+                                                         * merging each location (ADR 0051) */
+    ngx_auth_httpsig_nonce_redis_conf_t  nonce_redis;
+    ngx_shm_zone_t                      *nonce_shm_zone;
 } ngx_http_auth_httpsig_main_conf_t;
 
 /* done == 1 means "already evaluated this request" (memoizes evaluation
@@ -159,6 +181,10 @@ static char *ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
+static char *ngx_http_auth_httpsig_set_nonce_store_redis(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+static char *ngx_http_auth_httpsig_set_nonce_store_zone(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
 static void ngx_http_auth_httpsig_cleanup_keys(void *data);
 
 static ngx_int_t ngx_http_auth_httpsig_variable_unset(
@@ -206,6 +232,13 @@ static ngx_conf_enum_t ngx_http_auth_httpsig_mode[] = {
     { ngx_string("off"),     NGX_HTTP_AUTH_HTTPSIG_MODE_OFF },
     { ngx_string("observe"), NGX_HTTP_AUTH_HTTPSIG_MODE_OBSERVE },
     { ngx_string("enforce"), NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE },
+    { ngx_null_string, 0 }
+};
+
+static ngx_conf_enum_t ngx_http_auth_httpsig_nonce_store[] = {
+    { ngx_string("off"),   NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF },
+    { ngx_string("shm"),   NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_SHM },
+    { ngx_string("redis"), NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_REDIS },
     { ngx_null_string, 0 }
 };
 
@@ -363,6 +396,28 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
     { ngx_string("auth_httpsig_key_cache_zone"),
       NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
       ngx_http_auth_httpsig_set_key_cache_zone,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("auth_httpsig_nonce_store"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_enum_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, nonce_store),
+      &ngx_http_auth_httpsig_nonce_store },
+
+    { ngx_string("auth_httpsig_nonce_store_redis"),
+      NGX_HTTP_MAIN_CONF | NGX_CONF_1MORE,
+      ngx_http_auth_httpsig_set_nonce_store_redis,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("auth_httpsig_nonce_store_zone"),
+      NGX_HTTP_MAIN_CONF | NGX_CONF_TAKE1,
+      ngx_http_auth_httpsig_set_nonce_store_zone,
       NGX_HTTP_MAIN_CONF_OFFSET,
       0,
       NULL },
@@ -542,6 +597,7 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
     conf->scheme_index = NGX_CONF_UNSET;
     conf->keyid_fallback_allow = NGX_CONF_UNSET;
     conf->require = NGX_CONF_UNSET;
+    conf->nonce_store = NGX_CONF_UNSET_UINT;
     conf->profile.expires_max = NGX_CONF_UNSET;
     conf->profile.max_skew = NGX_CONF_UNSET;
 
@@ -732,6 +788,65 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                            "auth_httpsig: \"auth_httpsig_require\" is \"on\" "
                            "but \"auth_httpsig_mode\" is \"off\"");
         return NGX_CONF_ERROR;
+    }
+
+    ngx_conf_merge_uint_value(conf->nonce_store, prev->nonce_store,
+                              NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF);
+
+    if (conf->nonce_store != NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF
+        && conf->mode == NGX_HTTP_AUTH_HTTPSIG_MODE_OFF)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: \"auth_httpsig_nonce_store\" is "
+                           "not \"off\" but \"auth_httpsig_mode\" is "
+                           "\"off\"");
+        return NGX_CONF_ERROR;
+    }
+
+    if (conf->nonce_store != NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF) {
+        mcf = ngx_http_conf_get_module_main_conf(cf,
+                                                 ngx_http_auth_httpsig_module);
+
+        /* Accumulate/check on the merged value, not declaration order:
+         * main-conf directives ("auth_httpsig_nonce_store_redis"/
+         * "..._zone") finish parsing before any location's merge runs,
+         * the same guarantee "auth_httpsig_agent_allow"'s
+         * mcf->shm_zone check below relies on. */
+        if (mcf->nonce_store_backend
+            == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF)
+        {
+            mcf->nonce_store_backend = conf->nonce_store;
+
+        } else if (mcf->nonce_store_backend != conf->nonce_store) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "auth_httpsig: \"auth_httpsig_nonce_store\" "
+                               "must select the same backend (\"shm\" or "
+                               "\"redis\") everywhere in the "
+                               "configuration");
+            return NGX_CONF_ERROR;
+        }
+
+        if (conf->nonce_store == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_REDIS
+            && !mcf->nonce_redis.configured)
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "auth_httpsig: \"auth_httpsig_nonce_store\" "
+                               "is \"redis\" but no "
+                               "\"auth_httpsig_nonce_store_redis\" is "
+                               "configured");
+            return NGX_CONF_ERROR;
+        }
+
+        if (conf->nonce_store == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_SHM
+            && mcf->nonce_shm_zone == NULL)
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "auth_httpsig: \"auth_httpsig_nonce_store\" "
+                               "is \"shm\" but no "
+                               "\"auth_httpsig_nonce_store_zone\" is "
+                               "configured");
+            return NGX_CONF_ERROR;
+        }
     }
 
     if (conf->mode == NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE || conf->require) {
@@ -1111,6 +1226,18 @@ ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf, ngx_command_t *cmd,
         return NGX_CONF_ERROR;
     }
 
+    /* ngx_shared_memory_add() only rejects name collisions against a
+     * *different* tag; "auth_httpsig_nonce_store_zone" uses the same
+     * module tag, so a shared name would otherwise hand back this same
+     * zone and let the two directives silently clobber each other's
+     * init/data. */
+    if (shm_zone->data) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: shared memory zone \"%V\" is "
+                           "already used by another directive", &name);
+        return NGX_CONF_ERROR;
+    }
+
     shm_zone->init = ngx_auth_httpsig_cache_init_zone;
 
     shm_zone->data = ngx_pcalloc(cf->pool,
@@ -1120,6 +1247,214 @@ ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf, ngx_command_t *cmd,
     }
 
     mcf->shm_zone = shm_zone;
+
+    return NGX_CONF_OK;
+}
+
+
+/*
+ * "hostname=" defaults to "127.0.0.1" if omitted, matching
+ * nginx-keyval's keyval_zone_redis; every other parameter must be
+ * explicit to avoid silently trusting a default port/db/timeout for a
+ * production Redis instance.
+ */
+static char *
+ngx_http_auth_httpsig_set_nonce_store_redis(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf)
+{
+    ngx_http_auth_httpsig_main_conf_t *mcf = conf;
+    u_char *p;
+    ngx_int_t n;
+    ngx_uint_t i;
+    ngx_str_t *value, s;
+    time_t timeout;
+
+    if (mcf->nonce_redis.configured) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    mcf->nonce_redis.port = 6379;
+    mcf->nonce_redis.db = 0;
+    mcf->nonce_redis.connect_timeout = 3;
+    mcf->nonce_redis.command_timeout = 3;
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        if (ngx_strncmp(value[i].data, "hostname=", 9) == 0) {
+            s.len = value[i].len - 9;
+            s.data = value[i].data + 9;
+
+            p = ngx_pnalloc(cf->pool, s.len + 1);
+            if (p == NULL) {
+                return NGX_CONF_ERROR;
+            }
+
+            ngx_memcpy(p, s.data, s.len);
+            p[s.len] = '\0';
+
+            mcf->nonce_redis.hostname = p;
+            continue;
+        }
+
+        if (ngx_strncmp(value[i].data, "port=", 5) == 0) {
+            s.len = value[i].len - 5;
+            s.data = value[i].data + 5;
+
+            n = ngx_atoi(s.data, s.len);
+            if (n == NGX_ERROR || n < 1 || n > 65535) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "auth_httpsig: invalid port value "
+                                   "\"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            mcf->nonce_redis.port = n;
+            continue;
+        }
+
+        if (ngx_strncmp(value[i].data, "database=", 9) == 0) {
+            s.len = value[i].len - 9;
+            s.data = value[i].data + 9;
+
+            n = ngx_atoi(s.data, s.len);
+            if (n == NGX_ERROR || n < 0) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "auth_httpsig: invalid database value "
+                                   "\"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            mcf->nonce_redis.db = n;
+            continue;
+        }
+
+        if (ngx_strncmp(value[i].data, "connect_timeout=", 16) == 0) {
+            s.len = value[i].len - 16;
+            s.data = value[i].data + 16;
+
+            timeout = ngx_parse_time(&s, 1);
+            if (timeout == (time_t) NGX_ERROR || timeout == 0) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "auth_httpsig: invalid connect_timeout "
+                                   "value \"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            mcf->nonce_redis.connect_timeout = timeout;
+            continue;
+        }
+
+        if (ngx_strncmp(value[i].data, "command_timeout=", 16) == 0) {
+            s.len = value[i].len - 16;
+            s.data = value[i].data + 16;
+
+            timeout = ngx_parse_time(&s, 1);
+            if (timeout == (time_t) NGX_ERROR || timeout == 0) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "auth_httpsig: invalid command_timeout "
+                                   "value \"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            mcf->nonce_redis.command_timeout = timeout;
+            continue;
+        }
+
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: invalid parameter \"%V\"",
+                           &value[i]);
+        return NGX_CONF_ERROR;
+    }
+
+    if (mcf->nonce_redis.hostname == NULL) {
+        p = ngx_pnalloc(cf->pool, sizeof("127.0.0.1"));
+        if (p == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        ngx_memcpy(p, "127.0.0.1", sizeof("127.0.0.1"));
+        mcf->nonce_redis.hostname = p;
+    }
+
+    mcf->nonce_redis.configured = 1;
+
+    return NGX_CONF_OK;
+}
+
+
+/*
+ * Same "<name>:<size>" syntax and 8-page floor as
+ * "auth_httpsig_key_cache_zone"; kept as a separate zone (not shared)
+ * because the two caches have opposite hit semantics (ADR 0049).
+ */
+static char *
+ngx_http_auth_httpsig_set_nonce_store_zone(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf)
+{
+    ngx_http_auth_httpsig_main_conf_t *mcf = conf;
+    u_char *p;
+    ssize_t size;
+    ngx_str_t *value, name, s;
+    ngx_shm_zone_t *shm_zone;
+
+    if (mcf->nonce_shm_zone) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+
+    p = (u_char *) ngx_strchr(value[1].data, ':');
+    if (p == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: invalid zone size \"%V\"",
+                           &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    name.data = value[1].data;
+    name.len = p - name.data;
+
+    s.data = p + 1;
+    s.len = value[1].data + value[1].len - s.data;
+
+    size = ngx_parse_size(&s);
+    if (size == NGX_ERROR) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: invalid zone size \"%V\"",
+                           &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    if (size < (ssize_t) (8 * ngx_pagesize)) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: zone \"%V\" is too small",
+                           &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    shm_zone = ngx_shared_memory_add(cf, &name, size,
+                                     &ngx_http_auth_httpsig_module);
+    if (shm_zone == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    if (shm_zone->data) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: shared memory zone \"%V\" is "
+                           "already used by another directive", &name);
+        return NGX_CONF_ERROR;
+    }
+
+    shm_zone->init = ngx_auth_httpsig_nonce_store_init_zone;
+
+    shm_zone->data = ngx_pcalloc(cf->pool,
+                                 sizeof(ngx_auth_httpsig_nonce_store_ctx_t));
+    if (shm_zone->data == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    mcf->nonce_shm_zone = shm_zone;
 
     return NGX_CONF_OK;
 }
