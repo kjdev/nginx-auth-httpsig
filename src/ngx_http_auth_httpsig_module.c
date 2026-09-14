@@ -131,13 +131,19 @@ typedef struct {
  * ngx_http_auth_httpsig_resolve_keys()). internal_error is set by
  * evaluate() itself, for the NGX_ERROR cases that leave ctx->result at
  * NOT_SIGNED (fail-open) but still deserve a distinct $httpsig_error
- * token from "not signed". */
+ * token from "not signed". nonce_store_unavailable is likewise set by
+ * evaluate() (via ngx_http_auth_httpsig_check_nonce()) whenever the
+ * configured nonce store could not be consulted; the request still
+ * fails open (ctx->result stays OK), but $httpsig_error surfaces
+ * "nonce_store_unavailable" so this is distinguishable from an actual
+ * replay. */
 typedef struct {
     unsigned                         done:1;
     unsigned                         directory_done:1;
     unsigned                         claimed:1;
     unsigned                         keys_unavailable:1;
     unsigned                         internal_error:1;
+    unsigned                         nonce_store_unavailable:1;
     ngx_auth_httpsig_result_t        result;
     ngx_auth_httpsig_fetch_reason_t  directory_reason;
     ngx_str_t                        keyid;
@@ -164,6 +170,9 @@ typedef struct {
 static ngx_int_t ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_httpsig_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_auth_httpsig_init_process(ngx_cycle_t *cycle);
+#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+static void ngx_http_auth_httpsig_exit_process(ngx_cycle_t *cycle);
+#endif
 static void *ngx_http_auth_httpsig_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf,
@@ -451,7 +460,11 @@ ngx_module_t ngx_http_auth_httpsig_module = {
     ngx_http_auth_httpsig_init_process,    /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
+#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+    ngx_http_auth_httpsig_exit_process,    /* exit process */
+#else
     NULL,                                  /* exit process */
+#endif
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -567,6 +580,24 @@ ngx_http_auth_httpsig_init_process(ngx_cycle_t *cycle)
 
     return NGX_OK;
 }
+
+
+#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+
+/*
+ * The Redis connection opened lazily by
+ * ngx_auth_httpsig_nonce_store_redis_check() lives in a file-scope
+ * static in ngx_auth_httpsig_nonce_store.c, not in any config or pool
+ * this module frees automatically, so it needs an explicit close here
+ * on worker shutdown.
+ */
+static void
+ngx_http_auth_httpsig_exit_process(ngx_cycle_t *cycle)
+{
+    ngx_auth_httpsig_nonce_store_redis_close();
+}
+
+#endif /* NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS */
 
 
 static void *
@@ -825,6 +856,16 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                                "configuration");
             return NGX_CONF_ERROR;
         }
+
+#if !(NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+        if (conf->nonce_store == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_REDIS) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "auth_httpsig: \"auth_httpsig_nonce_store\" "
+                               "is \"redis\" but this binary was built "
+                               "without redis support");
+            return NGX_CONF_ERROR;
+        }
+#endif
 
         if (conf->nonce_store == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_REDIS
             && !mcf->nonce_redis.configured)
@@ -2437,6 +2478,182 @@ ngx_http_auth_httpsig_resolve_keys(ngx_http_request_t *r,
 }
 
 
+/*
+ * Memoizes the nonce-store verdict for a request in r->pool, not in
+ * ctx: ngx_http_internal_redirect() (try_files, error_page, an
+ * upstream X-Accel-Redirect, the index module) zeroes every module's
+ * r->ctx and reruns the phases from the top, but leaves r->pool alone.
+ * ngx_http_auth_httpsig_evaluate() is memoized on ctx->done, so it
+ * fully reruns after such a redirect; re-verifying the signature is
+ * harmless (idempotent), but "SET NX EX" is not -- a second run would
+ * see its own first write and misreport a legitimate request as
+ * NGX_AUTH_HTTPSIG_RESULT_NONCE_REPLAYED. The lookup mirrors
+ * nginx-keyval's ngx_keyval_store_redis_get_ctx(): a pool cleanup
+ * whose handler pointer is used purely as a marker to find (and here,
+ * not to release anything).
+ */
+typedef struct {
+    ngx_auth_httpsig_result_t  result;
+    unsigned                   unavailable:1;
+    unsigned                   internal_error:1; /* memoized alongside
+                                                  * result/unavailable so a
+                                                  * second evaluate() pass
+                                                  * for the same request
+                                                  * (internal redirect)
+                                                  * does not silently drop
+                                                  * an error the first
+                                                  * pass hit */
+} ngx_http_auth_httpsig_nonce_verdict_t;
+
+
+static void
+ngx_http_auth_httpsig_nonce_verdict_noop(void *data)
+{
+}
+
+
+static ngx_http_auth_httpsig_nonce_verdict_t *
+ngx_http_auth_httpsig_nonce_verdict_find(ngx_http_request_t *r)
+{
+    ngx_pool_cleanup_t *cln;
+
+    for (cln = r->pool->cleanup; cln; cln = cln->next) {
+        if (cln->handler == ngx_http_auth_httpsig_nonce_verdict_noop) {
+            return cln->data;
+        }
+    }
+
+    return NULL;
+}
+
+
+/*
+ * Consults the configured nonce store for a signature that has
+ * already passed Ed25519 verification (ADR 0047 decision 3: never
+ * write before that, so an attacker without a valid key cannot burn a
+ * legitimate signer's nonce). Returns the result unchanged
+ * (NGX_AUTH_HTTPSIG_RESULT_OK) when no store is configured or the
+ * signature carries no nonce at all (a profile that does not require
+ * one has nothing for this to check), and otherwise returns
+ * NGX_AUTH_HTTPSIG_RESULT_OK / _NONCE_REPLAYED / _NONCE_TOO_LONG. On
+ * an unreachable store this still returns
+ * NGX_AUTH_HTTPSIG_RESULT_OK and sets ctx->nonce_store_unavailable
+ * (fail-open); an oversized nonce is NOT fail-open (ADR 0051 decision
+ * 7). ctx->internal_error is set, and NGX_AUTH_HTTPSIG_RESULT_OK is
+ * still returned so the caller's ADR-0038 NOT_SIGNED/OK handling
+ * covers it, on pool allocation failure or a caller-bug return from
+ * the store backend.
+ */
+static ngx_auth_httpsig_result_t
+ngx_http_auth_httpsig_check_nonce(ngx_http_request_t *r,
+    ngx_http_auth_httpsig_ctx_t *ctx, ngx_http_auth_httpsig_loc_conf_t *lcf,
+    ngx_auth_httpsig_signature_t *sig, time_t now)
+{
+#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+    ngx_http_auth_httpsig_main_conf_t *mcf;
+    time_t ttl;
+#endif
+    ngx_http_auth_httpsig_nonce_verdict_t *verdict;
+    ngx_pool_cleanup_t *cln;
+    ngx_str_t key;
+    ngx_int_t rc;
+
+    if (lcf->nonce_store == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF
+        || sig->nonce.len == 0)
+    {
+        return NGX_AUTH_HTTPSIG_RESULT_OK;
+    }
+
+    verdict = ngx_http_auth_httpsig_nonce_verdict_find(r);
+
+    if (verdict != NULL) {
+        ctx->nonce_store_unavailable = verdict->unavailable;
+        ctx->internal_error |= verdict->internal_error;
+        return verdict->result;
+    }
+
+    cln = ngx_pool_cleanup_add(r->pool,
+                               sizeof(ngx_http_auth_httpsig_nonce_verdict_t));
+    if (cln == NULL) {
+        ctx->internal_error = 1;
+        return NGX_AUTH_HTTPSIG_RESULT_OK;
+    }
+
+    cln->handler = ngx_http_auth_httpsig_nonce_verdict_noop;
+    verdict = cln->data;
+    ngx_memzero(verdict, sizeof(ngx_http_auth_httpsig_nonce_verdict_t));
+    verdict->result = NGX_AUTH_HTTPSIG_RESULT_OK;
+
+    if (sig->nonce.len > NGX_AUTH_HTTPSIG_NONCE_MAX_LEN) {
+        verdict->result = NGX_AUTH_HTTPSIG_RESULT_NONCE_TOO_LONG;
+        return verdict->result;
+    }
+
+    if (ngx_auth_httpsig_nonce_store_key(r->pool, &sig->agent_host,
+                                         &sig->keyid, &sig->nonce, &key)
+        != NGX_OK)
+    {
+        /* Recorded on verdict, not just ctx: this outcome is memoized
+         * on r->pool below the "verdict != NULL" check above, so a
+         * second evaluate() pass for the same request (internal
+         * redirect) must see the same internal_error, not silently
+         * fall back to the verdict's zeroed defaults. */
+        verdict->internal_error = 1;
+        ctx->internal_error = 1;
+        return NGX_AUTH_HTTPSIG_RESULT_OK;
+    }
+
+    switch (lcf->nonce_store) {
+
+#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+    case NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_REDIS:
+        ttl = ngx_auth_httpsig_nonce_store_ttl(sig->expires,
+                                               lcf->profile.max_skew, now);
+        mcf = ngx_http_get_module_main_conf(r, ngx_http_auth_httpsig_module);
+        rc = ngx_auth_httpsig_nonce_store_redis_check(&mcf->nonce_redis,
+                                                      &key, ttl,
+                                                      r->connection->log);
+        break;
+#endif
+
+    default:
+        /* SHM has no rbtree/slab storage attached yet, so
+         * "auth_httpsig_nonce_store shm" fails open exactly like an
+         * unreachable Redis instead of refusing every request.
+         * Also the fallback for "redis" on a build without hiredis:
+         * merge_loc_conf() rejects that at config-load time, so it is
+         * not normally reachable, but failing open is safer than
+         * crashing if that validation is ever loosened. */
+        rc = NGX_ABORT;
+        break;
+    }
+
+    switch (rc) {
+    case NGX_OK:
+        verdict->result = NGX_AUTH_HTTPSIG_RESULT_OK;
+        break;
+
+    case NGX_DECLINED:
+        verdict->result = NGX_AUTH_HTTPSIG_RESULT_NONCE_REPLAYED;
+        break;
+
+    case NGX_ABORT:
+        verdict->result = NGX_AUTH_HTTPSIG_RESULT_OK;
+        verdict->unavailable = 1;
+        break;
+
+    default:
+        verdict->internal_error = 1;
+        ctx->internal_error = 1;
+        return NGX_AUTH_HTTPSIG_RESULT_OK;
+    }
+
+    ctx->nonce_store_unavailable = verdict->unavailable;
+
+    return verdict->result;
+}
+
+
 static ngx_int_t
 ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
     ngx_http_auth_httpsig_ctx_t **out)
@@ -2517,7 +2734,12 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
 
     pctx.expires_max = lcf->profile.expires_max;
     pctx.max_skew = lcf->profile.max_skew;
-    pctx.now = 0;
+
+    /* Captured here, not left at 0, so the nonce TTL derived below
+     * reuses the exact "now" the time-window check below used;
+     * pctx is const to the callee, so this caller has no other way
+     * to recover that value afterwards. */
+    pctx.now = ngx_time();
 
     rc = ngx_auth_httpsig_profile_verify(r->pool, &pctx, &req, &sig, &result);
 
@@ -2533,6 +2755,11 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
         && ctx->keys_unavailable)
     {
         result = NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE;
+    }
+
+    if (result == NGX_AUTH_HTTPSIG_RESULT_OK) {
+        result = ngx_http_auth_httpsig_check_nonce(r, ctx, lcf, &sig,
+                                                   pctx.now);
     }
 
     ctx->result = result;
@@ -2647,6 +2874,13 @@ ngx_http_auth_httpsig_access_handler(ngx_http_request_t *r)
 
     case NGX_AUTH_HTTPSIG_RESULT_KEY_UNAVAILABLE:
         return NGX_DECLINED;
+
+    case NGX_AUTH_HTTPSIG_RESULT_NONCE_REPLAYED:
+        if (lcf->mode != NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE) {
+            return NGX_DECLINED;
+        }
+
+        return ngx_http_auth_httpsig_deny_code(r, lcf->status.status_replay);
 
     default:
         if (lcf->mode != NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE) {
@@ -2818,6 +3052,13 @@ ngx_http_auth_httpsig_variable_error(ngx_http_request_t *r,
 
     if (ctx->internal_error) {
         name = "internal";
+
+    } else if (ctx->nonce_store_unavailable) {
+        /* Checked ahead of the plain OK/NOT_SIGNED unset case below:
+         * the store-unavailable fail-open path leaves ctx->result at
+         * OK (ADR 0050), so without this branch the outage would be
+         * invisible on $httpsig_error. */
+        name = "nonce_store_unavailable";
 
     } else if (ctx->result == NGX_AUTH_HTTPSIG_RESULT_OK
                || ctx->result == NGX_AUTH_HTTPSIG_RESULT_NOT_SIGNED)
