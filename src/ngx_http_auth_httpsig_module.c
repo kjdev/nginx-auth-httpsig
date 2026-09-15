@@ -2549,10 +2549,8 @@ ngx_http_auth_httpsig_check_nonce(ngx_http_request_t *r,
     ngx_http_auth_httpsig_ctx_t *ctx, ngx_http_auth_httpsig_loc_conf_t *lcf,
     ngx_auth_httpsig_signature_t *sig, time_t now)
 {
-#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
     ngx_http_auth_httpsig_main_conf_t *mcf;
     time_t ttl;
-#endif
     ngx_http_auth_httpsig_nonce_verdict_t *verdict;
     ngx_pool_cleanup_t *cln;
     ngx_str_t key;
@@ -2603,13 +2601,20 @@ ngx_http_auth_httpsig_check_nonce(ngx_http_request_t *r,
         return NGX_AUTH_HTTPSIG_RESULT_OK;
     }
 
+    ttl = ngx_auth_httpsig_nonce_store_ttl(sig->expires,
+                                           lcf->profile.max_skew, now);
+    mcf = ngx_http_get_module_main_conf(r, ngx_http_auth_httpsig_module);
+
     switch (lcf->nonce_store) {
+
+    case NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_SHM:
+        rc = ngx_auth_httpsig_nonce_store_shm_check(mcf->nonce_shm_zone->data,
+                                                    &key, ttl, now,
+                                                    r->connection->log);
+        break;
 
 #if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
     case NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_REDIS:
-        ttl = ngx_auth_httpsig_nonce_store_ttl(sig->expires,
-                                               lcf->profile.max_skew, now);
-        mcf = ngx_http_get_module_main_conf(r, ngx_http_auth_httpsig_module);
         rc = ngx_auth_httpsig_nonce_store_redis_check(&mcf->nonce_redis,
                                                       &key, ttl,
                                                       r->connection->log);
@@ -2617,13 +2622,11 @@ ngx_http_auth_httpsig_check_nonce(ngx_http_request_t *r,
 #endif
 
     default:
-        /* SHM has no rbtree/slab storage attached yet, so
-         * "auth_httpsig_nonce_store shm" fails open exactly like an
-         * unreachable Redis instead of refusing every request.
-         * Also the fallback for "redis" on a build without hiredis:
-         * merge_loc_conf() rejects that at config-load time, so it is
-         * not normally reachable, but failing open is safer than
-         * crashing if that validation is ever loosened. */
+        /* Reachable only when "auth_httpsig_nonce_store redis" is
+         * configured but the module was built without hiredis (the
+         * REDIS case above does not exist in that build); the directive
+         * parser accepts this combination. Fail open exactly like an
+         * unreachable Redis instead of refusing every request. */
         rc = NGX_ABORT;
         break;
     }

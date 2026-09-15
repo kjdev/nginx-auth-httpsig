@@ -3,11 +3,16 @@
  * Copyright (c) Bengo4.com, Inc.
  *
  * ngx_auth_httpsig_nonce_store.h - shared-memory zone reservation, key/TTL
- * derivation, and the Redis SET NX EX client for replay-prevention nonce
- * storage (auth_httpsig_nonce_store_zone / auth_httpsig_nonce_store_redis).
- * The SHM backend's rbtree + slab lookup/store logic is added on top of
- * this in later work (ADR 0049); this header already carries the Redis
- * backend end to end (ADR 0046, ADR 0047, ADR 0052).
+ * derivation, the SHM rbtree + slab nonce store, and the Redis SET NX EX
+ * client for replay-prevention nonce storage (auth_httpsig_nonce_store_zone
+ * / auth_httpsig_nonce_store_redis). The SHM backend mirrors
+ * ngx_auth_httpsig_cache.c's rbtree + ngx_slab_pool_t structure (ADR 0049)
+ * but with inverted hit semantics (a live node is a replay, not a value to
+ * reuse) and no eviction: a full zone fails open instead of evicting an
+ * expired node, since nonces are unique per request and an LRU/victim scan
+ * would be an O(n) walk under the zone mutex on every request once the
+ * zone fills. The Redis backend is carried end to end (ADR 0046, ADR
+ * 0047, ADR 0052).
  */
 
 #ifndef NGX_AUTH_HTTPSIG_NONCE_STORE_H
@@ -55,19 +60,44 @@ typedef struct {
     ngx_flag_t  configured;
 } ngx_auth_httpsig_nonce_redis_conf_t;
 
-/* Placeholder for auth_httpsig_nonce_store_zone's shm_zone->data; the
- * rbtree + slab node storage is added when the SHM backend is
- * implemented. */
 typedef struct {
-    ngx_uint_t  reserved;
+    ngx_rbtree_t       rbtree;
+    ngx_rbtree_node_t  sentinel;
+    time_t             last_nomem_log; /* zone-wide, touched only under
+                                        * shpool->mutex. Without eviction, a
+                                        * full zone stays full (nonces are
+                                        * unique, so no later lookup ever
+                                        * frees an expired node); this
+                                        * throttles the exhaustion WARN to
+                                        * once per
+                                        * NGX_AUTH_HTTPSIG_NONCE_STORE_NOMEM_LOG_INTERVAL
+                                        * seconds instead of once per
+                                        * request for as long as the zone
+                                        * stays full. */
+} ngx_auth_httpsig_nonce_store_sh_t;
+
+typedef struct {
+    ngx_rbtree_node_t  node;
+    ngx_str_t          nonce_key; /* immutable once allocated; stored right
+                                   * after this struct in the same slab
+                                   * allocation. Named distinctly from
+                                   * node.key (the rbtree hash) to keep the
+                                   * two from being confused at a call
+                                   * site. */
+    time_t  expires_at;
+} ngx_auth_httpsig_nonce_store_node_t;
+
+typedef struct {
+    ngx_auth_httpsig_nonce_store_sh_t *sh;
+    ngx_slab_pool_t                   *shpool;
 } ngx_auth_httpsig_nonce_store_ctx_t;
 
 
 /*
- * ngx_shm_zone_t.init callback for auth_httpsig_nonce_store_zone.
- * Returns NGX_OK without attaching any rbtree/slab state; replaced with
- * the real init (mirroring ngx_auth_httpsig_cache_init_zone's reload
- * reattachment) once the SHM backend stores nonce records.
+ * ngx_shm_zone_t.init callback for auth_httpsig_nonce_store_zone. Mirrors
+ * ngx_auth_httpsig_cache_init_zone's reload reattachment: on reload,
+ * `data` carries the previous cycle's ctx, so the existing rbtree is
+ * reattached rather than re-initialized.
  */
 ngx_int_t ngx_auth_httpsig_nonce_store_init_zone(ngx_shm_zone_t *shm_zone,
     void *data);
@@ -99,6 +129,29 @@ ngx_int_t ngx_auth_httpsig_nonce_store_key(ngx_pool_t *pool,
  */
 time_t ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
     time_t now);
+
+/*
+ * Checks and records `key` in the SHM nonce store, expiring at `now +
+ * ttl`. A single ngx_slab_alloc_locked() attempt backs a new entry; there
+ * is no eviction (ADR 0049 decision 3, ADR 0053) -- a full zone fails
+ * open immediately rather than scanning for a node to reclaim.
+ *
+ * Return value: same contract as
+ * ngx_auth_httpsig_nonce_store_redis_check():
+ *
+ *   NGX_OK        `key` was not previously recorded (or its prior record
+ *                 had already expired) and now is; no replay.
+ *   NGX_DECLINED  `key` is already recorded and still live; this is a
+ *                 replay. The existing expiry is left untouched (SET NX
+ *                 does not refresh a live key's TTL either).
+ *   NGX_ABORT     the zone has no room for a new entry. Caller must fail
+ *                 open, not treat this as a replay.
+ *   NGX_ERROR     a required argument is invalid; indicates a caller
+ *                 bug, never an ordinary runtime condition.
+ */
+ngx_int_t ngx_auth_httpsig_nonce_store_shm_check(
+    ngx_auth_httpsig_nonce_store_ctx_t *ctx, ngx_str_t *key, time_t ttl,
+    time_t now, ngx_log_t *log);
 
 #if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
 
