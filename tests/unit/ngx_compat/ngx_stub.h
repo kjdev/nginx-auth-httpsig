@@ -32,6 +32,7 @@ typedef intptr_t ngx_msec_t;
 
 #define NGX_OK          0
 #define NGX_ERROR       (-1)
+#define NGX_ABORT       (-6)
 #define NGX_DECLINED    (-5)
 
 #define NGX_MAX_INT_T_VALUE  INTPTR_MAX
@@ -269,9 +270,10 @@ ngx_slab_pool_t *ngx_stub_slab_create(size_t budget, ngx_log_t *log);
 void ngx_stub_slab_destroy(ngx_slab_pool_t *pool);
 
 
-/* --- ngx_crc32_short / ngx_memn2cmp --- */
+/* --- ngx_crc32_short / ngx_crc32_long / ngx_memn2cmp --- */
 
 uint32_t ngx_crc32_short(u_char *p, size_t len);
+uint32_t ngx_crc32_long(u_char *p, size_t len);
 ngx_int_t ngx_memn2cmp(u_char *s1, u_char *s2, size_t n1, size_t n2);
 
 

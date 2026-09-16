@@ -18,6 +18,7 @@ SRCS = test_main.c \
        test_directory.c \
        test_cache.c \
        test_keys_cache.c \
+       test_nonce_store.c \
        test_crypto.c \
        ngx_compat/ngx_stub.c \
        ngx_compat/ngx_rbtree.c \
@@ -29,6 +30,7 @@ SRCS = test_main.c \
        ../../src/ngx_auth_httpsig_directory.c \
        ../../src/ngx_auth_httpsig_cache.c \
        ../../src/ngx_auth_httpsig_keys_cache.c \
+       ../../src/ngx_auth_httpsig_nonce_store.c \
        ../../nxe-json/src/nxe_json.c \
        ../../nxe-jwx/src/nxe_jwx_jwks.c \
        ../../nxe-jwx/src/nxe_jwx_jws.c \
@@ -53,6 +55,7 @@ HDRS = test.h \
        ../../src/ngx_auth_httpsig_directory.h \
        ../../src/ngx_auth_httpsig_cache.h \
        ../../src/ngx_auth_httpsig_keys_cache.h \
+       ../../src/ngx_auth_httpsig_nonce_store.h \
        ../../nxe-json/src/nxe_json.h \
        ../../nxe-jwx/src/nxe_jwx.h \
        ../../nxe-jwx/src/nxe_jwx_jwks.h \
