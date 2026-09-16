@@ -69,10 +69,13 @@ jobs:
             ca-certificates \
             cpanminus \
             curl \
+            libhiredis-dev \
             libjansson-dev \
             nginx \
-            nginx-dev
+            nginx-dev \
+            redis-server
           sudo cpanm -n Test::Nginx
+          redis-server --daemonize yes --port 6379 --save "" --appendonly no
         env:
           nginx_version: ${{ matrix.nginx.version }}
           DEBIAN_FRONTEND: noninteractive
@@ -89,6 +92,7 @@ jobs:
             gd-dev \
             geoip-dev \
             git \
+            hiredis-dev \
             jansson-dev \
             libxslt-dev \
             linux-headers \
@@ -100,8 +104,10 @@ jobs:
             pcre2-dev \
             perl-dev \
             perl-utils \
+            redis \
             zlib-dev
           cpan -Ti Test::Nginx
+          redis-server --daemonize yes --port 6379 --save "" --appendonly no
         env:
           PERL_MM_USE_DEFAULT: 1
       - name: Checkout repository
@@ -142,6 +148,7 @@ jobs:
           ${sudo} ln -sfn /usr/sbin/nginx /usr/local/sbin/nginx
         env:
           dist: ${{ matrix.nginx.version }}
+          NGX_AUTH_HTTPSIG_NONCE_REDIS: 1
       - if: ${{ matrix.nginx.version != 'ubuntu' && matrix.nginx.version != 'alpine' }}
         name: Build with sources
         run: |
@@ -166,6 +173,7 @@ jobs:
           sudo cp objs/nginx /usr/local/sbin/
         env:
           nginx_version: ${{ matrix.nginx.version }}
+          NGX_AUTH_HTTPSIG_NONCE_REDIS: 1
       - name: Test
         run: |
           # nginx
@@ -191,6 +199,7 @@ jobs:
           TEST_NGINX_SERVROOT: /tmp/servroot
           TEST_NGINX_LOG_LEVEL: info
           TEST_NGINX_BINARY: /usr/local/sbin/nginx
+          NGX_AUTH_HTTPSIG_NONCE_REDIS: 1
     timeout-minutes: 30
     strategy:
       matrix:
