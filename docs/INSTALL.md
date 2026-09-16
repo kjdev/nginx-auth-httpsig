@@ -38,6 +38,12 @@ Run `nginx -V` there, keep its existing `--add-dynamic-module` options, and appe
 The build produces `objs/ngx_http_auth_httpsig_module.so`.
 Copy it into the target nginx's modules directory (or reference the built path directly) before loading it — `load_module`'s path is resolved relative to the nginx prefix, not the nginx source tree.
 
+### Optional: Redis nonce store support
+
+Set `NGX_AUTH_HTTPSIG_NONCE_REDIS=1` in the environment before running `./configure` to link `hiredis` and enable `auth_httpsig_nonce_store redis` (see [DIRECTIVES.md](DIRECTIVES.md#replay-prevention)).
+Without it, the module still builds and accepts every other directive, but choosing the `redis` nonce store backend is a configuration-time error — use `auth_httpsig_nonce_store shm` instead, or rebuild with this flag.
+`hiredis` (development headers) must be available at build time when this flag is set.
+
 ## Load the module
 
 ```nginx

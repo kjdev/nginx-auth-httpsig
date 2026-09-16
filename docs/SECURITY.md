@@ -77,7 +77,26 @@ Leave this off unless you have a specific reason (e.g., interop with a directory
 
 ## Replay
 
-This module has no nonce store or replay cache.
-A captured, valid signature can be replayed verbatim by anyone until `expires` (bounded by `auth_httpsig_expires_max`) elapses.
-`auth_httpsig_max_skew` bounds clock drift tolerance, not a replay window.
-If your threat model requires replay prevention, it isn't provided by this module today.
+This module has an optional nonce-based replay store (`auth_httpsig_nonce_store shm | redis`) that rejects a repeated signature within its own `created`/`expires` window.
+Its protection is conditional, not automatic, and has real gaps an operator should understand before relying on it.
+
+- **Off by default, and per-signer-optional even when enabled.**
+  `auth_httpsig_nonce_store off` (the default) means every valid signature is replayable verbatim until it expires, exactly as if this feature didn't exist.
+  Even with a store configured, `nonce` is an optional Signature-Input parameter in the `web-bot-auth` profile: a signature that omits it is never replay-checked, and there is no configuration knob on this module's side that can force a signer to include one.
+  If your threat model requires a guarantee that every accepted request was replay-checked, you must verify that yourself — e.g. rejecting signatures that don't carry a `nonce` in the first place, at your own layer.
+- **Backend choice is a single, global, mutually exclusive decision.**
+  `shm` and `redis` cannot be mixed across the configuration, and there is no automatic fallback from one to the other — see `auth_httpsig_nonce_store` in [DIRECTIVES.md](DIRECTIVES.md#replay-prevention).
+  `redis` moves the durability/scale tradeoff to a separate service you operate and secure; `shm` keeps everything in-process, at the cost of the fixed-size zone described next.
+- **The `shm` backend never evicts.**
+  Unlike the key-directory cache, a nonce is unique per request, so an eviction scan would hold the zone's lock for an O(n) walk on every request once the zone fills — this module deliberately does not do that (see `auth_httpsig_nonce_store_zone` in [DIRECTIVES.md](DIRECTIVES.md#auth_httpsig_nonce_store_zone)).
+  Once the zone fills, every subsequent signed request fails open (`$httpsig_error` = `nonce_store_unavailable`) until nginx is restarted — a `reload` only reattaches the existing zone, it does not clear it.
+  Sizing this zone for your expected peak of concurrently-unexpired nonces is the operator's primary control point; monitor for `nonce_store_unavailable` as the signal that it's undersized (or that the store needs a restart).
+- **A store that can't be consulted fails the request open, not closed.**
+  Redis unreachable, or the `shm` zone full, both surface as `$httpsig_error` = `nonce_store_unavailable`, and the request proceeds with its already-successful signature verdict intact (`$httpsig_verified` stays `1`).
+  This module treats "can't check for a replay" the same way it treats every other internal condition it can't attribute to the client (see "Fail-open by design" above) — not as a reason to reject otherwise-valid traffic.
+- **An oversized `nonce` is the one exception that is *not* fail-open.**
+  A `nonce` over 256 bytes is rejected outright as a failed verification (`$httpsig_error` = `nonce_too_long`), because silently accepting and not storing an unbounded value would let a signer bypass replay detection entirely.
+- **`auth_httpsig_status_replay` only rejects under `auth_httpsig_mode enforce`.**
+  Under `observe` (the default), a detected replay is still visible via `$httpsig_error` = `nonce_replayed`, but is not rejected — the same posture every other verification outcome has under `observe`.
+
+If your threat model requires replay prevention a signer cannot opt out of, this module's optional `nonce` parameter means `auth_httpsig_nonce_store` alone cannot give you that guarantee — you must additionally enforce, at your own layer, that every accepted request actually carried a `nonce`.

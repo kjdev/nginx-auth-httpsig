@@ -11,13 +11,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 
 - `auth_httpsig_mode enforce`: rejects a request whose signature is present, in scope, and fails verification, with a status code selected by failure category
 - `auth_httpsig_require`: rejects a request with no in-scope signature (unsigned, or a mismatched `tag`), independent of `auth_httpsig_mode enforce`
-- `auth_httpsig_status_parse_error`, `auth_httpsig_status_missing`, `auth_httpsig_status_replay`, `auth_httpsig_status_invalid` directives to override the default status code per failure category (`auth_httpsig_status_replay` is validated today but has no effect until replay detection ships)
+- `auth_httpsig_status_parse_error`, `auth_httpsig_status_missing`, `auth_httpsig_status_replay`, `auth_httpsig_status_invalid` directives to override the default status code per failure category
 - `satisfy any` support: this module's rejection status is clamped to `403` (unless already `403`/`401`) so it participates in nginx's OR aggregation with other access-phase modules
 - `auth_httpsig_key_rotation_retry_ttl`: rate-limited forced key-directory refetch, per host, to rescue a signature whose `keyid` doesn't match the cached key set because the signer just rotated its key
+
+#### Replay prevention
+
+- `auth_httpsig_nonce_store` (`off` / `shm` / `redis`): checks a verified signature's `nonce` against a store and rejects a repeat within the signature's own `created`/`expires` window; `shm` and `redis` are mutually exclusive across the whole configuration, with no automatic fallback between them
+- `auth_httpsig_nonce_store_zone`: shared-memory zone for the `shm` backend, sized by the operator; has no eviction, so a full zone fails open until nginx is restarted
+- `auth_httpsig_nonce_store_redis`: connection parameters (`hostname=`, `port=`, `database=`, `connect_timeout=`, `command_timeout=`) for the `redis` backend, built only when the module is compiled with `NGX_AUTH_HTTPSIG_NONCE_REDIS` (links `hiredis`)
+- `nonce_replayed`, `nonce_too_long`, `nonce_store_unavailable` values for `$httpsig_error`: a replay denies only under `auth_httpsig_mode enforce` via `auth_httpsig_status_replay`; an oversized `nonce` (over 256 bytes) is always rejected, not fail-open; an unreachable store fails the request open with its already-successful verdict intact
 
 ### Security
 
 - `KEY_UNAVAILABLE` outcomes (including `agent_not_allowed` and every `directory_*` fetch failure) always stay fail-open, even under `auth_httpsig_mode enforce` and `auth_httpsig_require`
+
+### Known limitations
+
+- Replay prevention only covers signatures that carry a `nonce`; the `web-bot-auth` profile treats `nonce` as optional, so a signer can omit it and bypass replay checking entirely — this cannot be forced from this module's configuration
+- The `shm` nonce store has no eviction; once its zone fills, it stays full (and every subsequent signed request fails open) until nginx is restarted
+
+### Dependencies
+
+- `hiredis` (development headers), only when built with `NGX_AUTH_HTTPSIG_NONCE_REDIS` set, to enable the `redis` nonce store backend
 
 ## [0.1.0] - 2026-09-10
 

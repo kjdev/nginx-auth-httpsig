@@ -28,11 +28,16 @@ See also: [INSTALL](INSTALL.md) · [EXAMPLES](EXAMPLES.md) ·
 | [auth_httpsig_key_rotation_retry_ttl](#auth_httpsig_key_rotation_retry_ttl) | http, server, location |
 | [auth_httpsig_expires_max](#auth_httpsig_expires_max) | http, server, location |
 | [auth_httpsig_max_skew](#auth_httpsig_max_skew) | http, server, location |
+| [auth_httpsig_nonce_store](#auth_httpsig_nonce_store) | http, server, location |
+| [auth_httpsig_nonce_store_redis](#auth_httpsig_nonce_store_redis) | http |
+| [auth_httpsig_nonce_store_zone](#auth_httpsig_nonce_store_zone) | http |
 | [auth_httpsig_keyid_fallback_allow](#auth_httpsig_keyid_fallback_allow) | http, server, location |
 
 All directives are valid in `http`, `server`, and `location` blocks, except
-`auth_httpsig_key_cache_zone`, which is `http`-only (a shared memory zone is
-a per-instance resource, not a per-location one).
+`auth_httpsig_key_cache_zone`, `auth_httpsig_nonce_store_redis`, and
+`auth_httpsig_nonce_store_zone`, which are `http`-only (each configures a
+process-global resource — a shared memory zone or the single Redis
+connection — not a per-location one).
 
 A directive left unset in a block inherits from the parent block, with one
 exception noted under `auth_httpsig_agent_allow`.
@@ -185,11 +190,13 @@ Default: auth_httpsig_status_replay 429;
 Context: http, server, location
 ```
 
-Reserved for a future replay-rejection response.
-This module has no nonce store or replay detection yet (see
-[SECURITY.md](SECURITY.md#replay)), so nothing currently returns this
-code; it is validated and stored today so a later release that adds
-replay detection does not need a new directive.
+Status code `auth_httpsig_mode enforce` returns for a replayed nonce
+(`$httpsig_error` = `nonce_replayed`), when `auth_httpsig_nonce_store` is
+`shm` or `redis` — see [Replay prevention](#replay-prevention).
+`code` must be between `400` and `599`.
+An oversized nonce (`$httpsig_error` = `nonce_too_long`) is not treated as
+a replay and uses `auth_httpsig_status_invalid` instead (see
+[SECURITY.md](SECURITY.md#replay)).
 
 ### auth_httpsig_status_invalid
 
@@ -448,8 +455,11 @@ An explicit value overrides the active profile's default ceiling in
 either direction: tightening it below the default is a valid way to
 require freshly-signed requests, but raising it — e.g. to `7d` — is
 equally possible and extends how long a captured signature stays
-replayable past `web-bot-auth`'s 24h default (this module has no nonce
-store; see `auth_httpsig_max_skew`).
+replayable past `web-bot-auth`'s 24h default when no nonce store is
+configured (`auth_httpsig_nonce_store off`, the default).
+With a nonce store enabled, this ceiling instead bounds how long the
+store must remember each nonce (see
+[Replay prevention](#replay-prevention)).
 
 ### auth_httpsig_max_skew
 
@@ -464,8 +474,107 @@ than this) and `expires` (not in the past by more than this).
 Defaults to the active profile's value (`60s` for `web-bot-auth`).
 
 This is tolerance for clock drift between the signer and this server, not
-a replay-prevention window — this module has no nonce store, so a
-signature can be replayed verbatim until it expires.
+a replay-prevention window by itself: without a nonce store
+(`auth_httpsig_nonce_store off`, the default), a signature can be
+replayed verbatim until it expires.
+See [Replay prevention](#replay-prevention) for the nonce-based store
+that closes this gap when enabled.
+
+## Replay prevention
+
+A location with `auth_httpsig_nonce_store` set to `shm` or `redis` checks
+each verified signature's `nonce` Signature-Input parameter against a
+store, and rejects a repeat within the signature's own validity window.
+`nonce` is optional in the `web-bot-auth` profile: a signature that omits
+it is not replay-checked at all, regardless of the configured store (see
+[SECURITY.md](SECURITY.md#replay) for what this means for operators).
+
+### auth_httpsig_nonce_store
+
+```text
+Syntax:  auth_httpsig_nonce_store off | shm | redis;
+Default: auth_httpsig_nonce_store off;
+Context: http, server, location
+```
+
+Selects the replay-prevention store backend for this block.
+`off` (the default) performs no replay checking at all.
+`shm` and `redis` both check-and-record a per-signature key (see below)
+before a signature is otherwise treated as valid.
+
+Every block across the whole configuration that sets this to something
+other than `off` must agree on the same backend — mixing `shm` in one
+location with `redis` in another on the same nginx instance is a
+configuration-time error, since the store is a single global resource,
+not a per-location one.
+`shm` additionally requires `auth_httpsig_nonce_store_zone`; `redis`
+requires both `auth_httpsig_nonce_store_redis` and a binary built with
+Redis support (see [INSTALL.md](INSTALL.md#build)).
+nginx refuses to start otherwise.
+There is no automatic fallback between backends.
+
+### auth_httpsig_nonce_store_redis
+
+```text
+Syntax:  auth_httpsig_nonce_store_redis [hostname=name] [port=number]
+                                        [database=number]
+                                        [connect_timeout=time]
+                                        [command_timeout=time];
+Default: -
+Context: http
+```
+
+Configures the single Redis connection used when `auth_httpsig_nonce_store`
+selects `redis` anywhere in the configuration.
+May be declared at most once per nginx instance.
+`hostname` defaults to `127.0.0.1`, `port` to `6379`, `database` to `0`,
+and `connect_timeout` / `command_timeout` to `3s` each.
+
+This directive is parsed and stored regardless of how the module was
+built; choosing `auth_httpsig_nonce_store redis` on a binary built
+without Redis support (see [INSTALL.md](INSTALL.md#build)) is what
+actually fails config-time validation.
+
+### auth_httpsig_nonce_store_zone
+
+```text
+Syntax:  auth_httpsig_nonce_store_zone name:size;
+Default: -
+Context: http
+```
+
+Declares the shared-memory zone the `shm` backend stores nonces in,
+minimum 8 pages (same syntax and floor as `auth_httpsig_key_cache_zone` /
+`limit_req_zone`'s `zone=`).
+May be declared at most once per nginx instance.
+Kept separate from `auth_httpsig_key_cache_zone` even though both use the
+same rbtree-plus-slab storage, since the two caches have opposite hit
+semantics: a key-directory cache hit means reuse, while a nonce-store hit
+means reject as a replay.
+
+This zone has no eviction.
+Once full, a new entry fails to allocate and the request fails open
+(`$httpsig_error` = `nonce_store_unavailable`) rather than reclaiming an
+existing one, and the zone stays full — nginx reload reattaches it as-is,
+so only a full restart clears it.
+Sizing this zone is therefore the operator's primary control point; see
+[SECURITY.md](SECURITY.md#replay) for guidance.
+
+### Nonce key, TTL, and size limit
+
+The store key joins the verified signature's extracted `Signature-Agent`
+host, `keyid`, and `nonce` — the host is included so two signers sharing
+a non-thumbprint `keyid` fallback label cannot collide with each other's
+nonces.
+The store entry's TTL is `expires + auth_httpsig_max_skew - now`: exactly
+as long as the signature itself remains inside its own time window, no
+longer.
+
+A `nonce` longer than 256 bytes is rejected outright (`$httpsig_error` =
+`nonce_too_long`, denied via `auth_httpsig_status_invalid`) rather than
+truncated or stored unbounded.
+This is not a fail-open condition: silently accepting an oversized nonce
+without storing it would let a signer bypass replay detection entirely.
 
 ## Key trust
 
@@ -525,6 +634,13 @@ that host reach `Host` / `proxy_pass` / `proxy_ssl_name` inside the
 dedicated internal fetch location.
 See [EXAMPLES.md](EXAMPLES.md#dynamic-key-directory).
 
+A replayed or oversized nonce (`$httpsig_error` = `nonce_replayed` /
+`nonce_too_long`) leaves `$httpsig_keyid` and `$httpsig_agent` unset even
+though the signature's cryptographic verification itself already
+succeeded — the nonce-store check runs only after that, but its own
+failure is exposed the same as any other failed verification, not as
+success (see [Replay prevention](#replay-prevention)).
+
 ### `$httpsig_error` values
 
 | Value | Meaning |
@@ -536,6 +652,8 @@ See [EXAMPLES.md](EXAMPLES.md#dynamic-key-directory).
 | `signature_mismatch` | Cryptographic verification failed against the resolved key |
 | `expired` | The signature is outside the `created`/`expires` time window |
 | `profile_mismatch` | Required parameters or covered components for the active profile are missing, or the supplied `alg` does not match the active profile |
+| `nonce_replayed` | The verified signature's `nonce` was already recorded as used within its validity window (denies only under `auth_httpsig_mode enforce`; see `auth_httpsig_status_replay`) |
+| `nonce_too_long` | The signature's `nonce` exceeded the fixed 256-byte limit (rejected outright, not fail-open; see `auth_httpsig_status_invalid`) |
 | `key_unavailable` | The key directory fetch did not yield usable keys (fail-open; see below) |
 | `agent_not_allowed` | `Signature-Agent` resolves to a host not on `auth_httpsig_agent_allow` |
 | `directory_busy` | Another worker is already fetching this host's key directory |
@@ -548,11 +666,16 @@ See [EXAMPLES.md](EXAMPLES.md#dynamic-key-directory).
 | `directory_empty` | The key-directory response body was empty |
 | `directory_invalid` | The key-directory response body did not parse as a JWKS |
 | `directory_failed` | The fetch subrequest itself failed (connect/timeout/DNS) or another internal error prevented the fetch |
+| `nonce_store_unavailable` | The configured nonce store could not be consulted (Redis unreachable, or the `shm` zone had no room); fail-open, but differently from the rest of this group — see below |
 
 Every `directory_*` value and `key_unavailable` are fail-open outcomes: the
 request proceeds with no verdict, exactly as if it were unsigned.
 This holds regardless of `auth_httpsig_mode` or `auth_httpsig_require` —
 neither enforce nor require turns a `key_unavailable` or `directory_*`
 outcome into a rejection (see `auth_httpsig_require` above).
+`nonce_store_unavailable` is also fail-open, but the signature was already
+verified before the nonce check ran, so the request proceeds with that
+successful verdict intact (`$httpsig_verified` = `1`) rather than with no
+verdict at all — see [Replay prevention](#replay-prevention).
 They exist purely for operational diagnosis (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)), not to signal a rejection.
