@@ -392,7 +392,7 @@ TEST(nonce_store_shm_check_recovers_after_expiry_when_zone_was_full)
 }
 
 
-TEST(nonce_store_shm_check_reclaim_stops_at_live_head)
+TEST(nonce_store_shm_check_reclaims_expired_behind_live_long_lived)
 {
     ngx_auth_httpsig_nonce_store_ctx_t *ctx;
     ngx_str_t key_a, key_b, key_c, key_d;
@@ -409,29 +409,34 @@ TEST(nonce_store_shm_check_reclaim_stops_at_live_head)
     ctx = nonce_store_new(pool, budget, TEST_ZONE_NAME);
     ASSERT(ctx != NULL);
 
-    /* key_a (long-lived) heads the queue; key_b (short-lived) is behind it. */
+    /* key_a (long-lived) was inserted first; key_b (short-lived) after it. */
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 100, 1000, NULL));
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_b, 10, 1000, NULL));
 
-    /* key_b has expired but sits behind a live head, so it is not reclaimed
-     * yet and the zone still reads as full. */
+    /* expires_at == now is still live: nothing to reclaim yet. */
     ASSERT_EQ_INT(NGX_ABORT,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_c, 10, 1010, NULL));
+
+    /* key_b has expired and is reclaimed although the older key_a is live. */
+    ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_c, 10, 1011, NULL));
 
-    /* Once the head expires, both are reclaimed. */
-    ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_c, 10, 1101, NULL));
-    ASSERT_EQ_INT(NGX_OK,
-        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_d, 10, 1101, NULL));
+    /* key_a is untouched and still reads as a replay. */
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 10, 1011, NULL));
+
+    /* Zone is full of live nodes again (key_a, key_c). */
+    ASSERT_EQ_INT(NGX_ABORT,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_d, 10, 1011, NULL));
 
     nonce_store_free(ctx);
     return 0;
 }
 
 
-TEST(nonce_store_shm_check_expired_reuse_moves_node_to_queue_tail)
+TEST(nonce_store_shm_check_expired_reuse_reorders_expiry)
 {
     ngx_auth_httpsig_nonce_store_ctx_t *ctx;
     ngx_str_t key_a, key_b, key_c;
@@ -452,13 +457,12 @@ TEST(nonce_store_shm_check_expired_reuse_moves_node_to_queue_tail)
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_b, 100, 1000, NULL));
 
-    /* key_a expired and is reused with a long TTL; it must move behind
-     * key_b, otherwise the head would be a live node with a later one
-     * expired behind it. */
+    /* key_a expired and is reused with a long TTL: its old expiry must no
+     * longer be the reclaim candidate. */
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 200, 1011, NULL));
 
-    /* Head is now key_b (expires 1100); at 1101 it is reclaimed. */
+    /* key_b (expires 1100) is the earliest; at 1101 it is reclaimed. */
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_c, 10, 1101, NULL));
 
@@ -707,8 +711,8 @@ TEST_SUITE(nonce_store)
     RUN(nonce_store_shm_check_ok_on_expired_reuse);
     RUN(nonce_store_shm_check_aborts_when_zone_is_full);
     RUN(nonce_store_shm_check_recovers_after_expiry_when_zone_was_full);
-    RUN(nonce_store_shm_check_reclaim_stops_at_live_head);
-    RUN(nonce_store_shm_check_expired_reuse_moves_node_to_queue_tail);
+    RUN(nonce_store_shm_check_reclaims_expired_behind_live_long_lived);
+    RUN(nonce_store_shm_check_expired_reuse_reorders_expiry);
     RUN(nonce_store_shm_check_rejects_bad_args);
 #if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
     RUN(nonce_store_redis_recovers_after_backoff_and_detects_replay);
