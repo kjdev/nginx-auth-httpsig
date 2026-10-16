@@ -40,6 +40,8 @@ ngx_auth_httpsig_result_name(ngx_auth_httpsig_result_t result)
         return "nonce_too_long";
     case NGX_AUTH_HTTPSIG_RESULT_NONCE_MISSING:
         return "nonce_missing";
+    case NGX_AUTH_HTTPSIG_RESULT_NONCE_STORE_UNAVAILABLE:
+        return "nonce_store_unavailable";
     }
 
     return "unknown";

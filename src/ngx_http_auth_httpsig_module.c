@@ -27,6 +27,9 @@
 #define NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_SHM     1
 #define NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_REDIS   2
 
+#define NGX_HTTP_AUTH_HTTPSIG_NONCE_FAILURE_OPEN    0
+#define NGX_HTTP_AUTH_HTTPSIG_NONCE_FAILURE_CLOSED  1
+
 
 typedef struct {
     ngx_auth_httpsig_keys_t *keys;
@@ -69,6 +72,10 @@ typedef struct {
     ngx_flag_t  nonce_required;                          /* reject a verified
                                                           * signature that has
                                                           * no "nonce" */
+    ngx_uint_t  nonce_store_failure;                     /* open/closed:
+                                                          * outcome when the
+                                                          * nonce store is
+                                                          * unavailable */
     ngx_uint_t  nonce_store;                             /* off/shm/redis
                                                           * selector; each
                                                           * location
@@ -252,6 +259,12 @@ static ngx_conf_enum_t ngx_http_auth_httpsig_nonce_store[] = {
     { ngx_null_string, 0 }
 };
 
+static ngx_conf_enum_t ngx_http_auth_httpsig_nonce_store_failure[] = {
+    { ngx_string("open"),   NGX_HTTP_AUTH_HTTPSIG_NONCE_FAILURE_OPEN },
+    { ngx_string("closed"), NGX_HTTP_AUTH_HTTPSIG_NONCE_FAILURE_CLOSED },
+    { ngx_null_string, 0 }
+};
+
 static ngx_conf_num_bounds_t ngx_http_auth_httpsig_status_bounds = {
     ngx_conf_check_num_bounds, 400, 599
 };
@@ -417,6 +430,14 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_auth_httpsig_loc_conf_t, nonce_store),
       &ngx_http_auth_httpsig_nonce_store },
+
+    { ngx_string("auth_httpsig_nonce_store_failure"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_TAKE1,
+      ngx_conf_set_enum_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, nonce_store_failure),
+      &ngx_http_auth_httpsig_nonce_store_failure },
 
     { ngx_string("auth_httpsig_nonce_required"),
       NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
@@ -639,6 +660,7 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
     conf->require = NGX_CONF_UNSET;
     conf->nonce_store = NGX_CONF_UNSET_UINT;
     conf->nonce_required = NGX_CONF_UNSET;
+    conf->nonce_store_failure = NGX_CONF_UNSET_UINT;
     conf->profile.expires_max = NGX_CONF_UNSET;
     conf->profile.max_skew = NGX_CONF_UNSET;
 
@@ -869,6 +891,10 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                            "\"off\"");
         return NGX_CONF_ERROR;
     }
+
+    ngx_conf_merge_uint_value(conf->nonce_store_failure,
+                              prev->nonce_store_failure,
+                              NGX_HTTP_AUTH_HTTPSIG_NONCE_FAILURE_OPEN);
 
     if (conf->nonce_store != NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF) {
         mcf = ngx_http_conf_get_module_main_conf(cf,
@@ -2540,9 +2566,10 @@ ngx_http_auth_httpsig_nonce_verdict_find(ngx_http_request_t *r)
  * (nothing for this to check), returns _NONCE_MISSING for a nonce-less
  * signature when it is on, and otherwise returns
  * NGX_AUTH_HTTPSIG_RESULT_OK / _NONCE_REPLAYED / _NONCE_TOO_LONG. On
- * an unreachable store this still returns
- * NGX_AUTH_HTTPSIG_RESULT_OK and sets ctx->nonce_store_unavailable
- * (fail-open); an oversized nonce is NOT fail-open.
+ * an unreachable store this sets ctx->nonce_store_unavailable and
+ * returns NGX_AUTH_HTTPSIG_RESULT_OK (fail-open, the default) or
+ * _NONCE_STORE_UNAVAILABLE ("auth_httpsig_nonce_store_failure closed");
+ * an oversized nonce is NOT fail-open.
  * ctx->internal_error is set, and NGX_AUTH_HTTPSIG_RESULT_OK is
  * still returned so the caller's NOT_SIGNED/OK handling covers it, on
  * pool allocation failure or a caller-bug return from the store
@@ -2648,7 +2675,10 @@ ngx_http_auth_httpsig_check_nonce(ngx_http_request_t *r,
         break;
 
     case NGX_ABORT:
-        verdict->result = NGX_AUTH_HTTPSIG_RESULT_OK;
+        verdict->result = lcf->nonce_store_failure
+                          == NGX_HTTP_AUTH_HTTPSIG_NONCE_FAILURE_CLOSED
+                          ? NGX_AUTH_HTTPSIG_RESULT_NONCE_STORE_UNAVAILABLE
+                          : NGX_AUTH_HTTPSIG_RESULT_OK;
         verdict->unavailable = 1;
         break;
 
@@ -2891,6 +2921,16 @@ ngx_http_auth_httpsig_access_handler(ngx_http_request_t *r)
         }
 
         return ngx_http_auth_httpsig_deny_code(r, lcf->status.status_replay);
+
+    case NGX_AUTH_HTTPSIG_RESULT_NONCE_STORE_UNAVAILABLE:
+        if (lcf->mode != NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE) {
+            return NGX_DECLINED;
+        }
+
+        /* A store outage is not the signer's fault, so it is not
+         * reported with the signature-invalid status. */
+        return ngx_http_auth_httpsig_deny_code(r,
+                                               NGX_HTTP_SERVICE_UNAVAILABLE);
 
     default:
         if (lcf->mode != NGX_HTTP_AUTH_HTTPSIG_MODE_ENFORCE) {
