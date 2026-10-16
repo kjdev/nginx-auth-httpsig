@@ -194,8 +194,9 @@ Status code `auth_httpsig_mode enforce` returns for a replayed nonce
 (`$httpsig_error` = `nonce_replayed`), when `auth_httpsig_nonce_store` is
 `shm` or `redis` — see [Replay prevention](#replay-prevention).
 `code` must be between `400` and `599`.
-An oversized nonce (`$httpsig_error` = `nonce_too_long`) is not treated as
-a replay and uses `auth_httpsig_status_invalid` instead (see
+An oversized or missing nonce (`$httpsig_error` = `nonce_too_long` /
+`nonce_missing`) is not treated as a replay and uses
+`auth_httpsig_status_invalid` instead (see
 [SECURITY.md](SECURITY.md#replay)).
 
 ### auth_httpsig_status_invalid
@@ -486,8 +487,9 @@ A location with `auth_httpsig_nonce_store` set to `shm` or `redis` checks
 each verified signature's `nonce` Signature-Input parameter against a
 store, and rejects a repeat within the signature's own validity window.
 `nonce` is optional in the `web-bot-auth` profile: a signature that omits
-it is not replay-checked at all, regardless of the configured store (see
-[SECURITY.md](SECURITY.md#replay) for what this means for operators).
+it is not replay-checked at all, unless `auth_httpsig_nonce_required` is
+on (see [SECURITY.md](SECURITY.md#replay) for what this means for
+operators).
 
 ### auth_httpsig_nonce_store
 
@@ -512,6 +514,26 @@ requires both `auth_httpsig_nonce_store_redis` and a binary built with
 Redis support (see [INSTALL.md](INSTALL.md#build)).
 nginx refuses to start otherwise.
 There is no automatic fallback between backends.
+
+### auth_httpsig_nonce_required
+
+```text
+Syntax:  auth_httpsig_nonce_required on | off;
+Default: auth_httpsig_nonce_required off;
+Context: http, server, location
+```
+
+With this on, a signature that verifies but carries no `nonce` is
+rejected as a failed verification (`$httpsig_error` = `nonce_missing`,
+denied via `auth_httpsig_status_invalid`), instead of skipping the replay
+check.
+This closes the gap where a signer could opt out of replay prevention by
+omitting `nonce`.
+It only has an effect together with `auth_httpsig_nonce_store`: setting it
+`on` in a block whose `auth_httpsig_nonce_store` is `off` is a
+configuration-time error.
+Like every other verification failure, the rejection applies only under
+`auth_httpsig_mode enforce`.
 
 ### auth_httpsig_nonce_store_redis
 
@@ -649,8 +671,8 @@ that host reach `Host` / `proxy_pass` / `proxy_ssl_name` inside the
 dedicated internal fetch location.
 See [EXAMPLES.md](EXAMPLES.md#dynamic-key-directory).
 
-A replayed or oversized nonce (`$httpsig_error` = `nonce_replayed` /
-`nonce_too_long`) leaves `$httpsig_keyid` and `$httpsig_agent` unset even
+A replayed, oversized, or missing nonce (`$httpsig_error` =
+`nonce_replayed` / `nonce_too_long` / `nonce_missing`) leaves `$httpsig_keyid` and `$httpsig_agent` unset even
 though the signature's cryptographic verification itself already
 succeeded — the nonce-store check runs only after that, but its own
 failure is exposed the same as any other failed verification, not as
@@ -669,6 +691,7 @@ success (see [Replay prevention](#replay-prevention)).
 | `profile_mismatch` | Required parameters or covered components for the active profile are missing, or the supplied `alg` does not match the active profile |
 | `nonce_replayed` | The verified signature's `nonce` was already recorded as used within its validity window (denies only under `auth_httpsig_mode enforce`; see `auth_httpsig_status_replay`) |
 | `nonce_too_long` | The signature's `nonce` exceeded the fixed 256-byte limit (rejected outright, not fail-open; see `auth_httpsig_status_invalid`) |
+| `nonce_missing` | The signature carries no `nonce` while `auth_httpsig_nonce_required` is on (see `auth_httpsig_status_invalid`) |
 | `key_unavailable` | The key directory fetch did not yield usable keys (fail-open; see below) |
 | `agent_not_allowed` | `Signature-Agent` resolves to a host not on `auth_httpsig_agent_allow` |
 | `directory_busy` | Another worker is already fetching this host's key directory |

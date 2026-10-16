@@ -82,8 +82,8 @@ Its protection is conditional, not automatic, and has real gaps an operator shou
 
 - **Off by default, and per-signer-optional even when enabled.**
   `auth_httpsig_nonce_store off` (the default) means every valid signature is replayable verbatim until it expires, exactly as if this feature didn't exist.
-  Even with a store configured, `nonce` is an optional Signature-Input parameter in the `web-bot-auth` profile: a signature that omits it is never replay-checked, and there is no configuration knob on this module's side that can force a signer to include one.
-  If your threat model requires a guarantee that every accepted request was replay-checked, you must verify that yourself — e.g. rejecting signatures that don't carry a `nonce` in the first place, at your own layer.
+  Even with a store configured, `nonce` is an optional Signature-Input parameter in the `web-bot-auth` profile: a signature that omits it is never replay-checked, unless `auth_httpsig_nonce_required on` is set.
+  With it on, a signature without a `nonce` is rejected as a failed verification (`$httpsig_error` = `nonce_missing`, denied via `auth_httpsig_status_invalid` under `auth_httpsig_mode enforce`).
 - **Backend choice is a single, global, mutually exclusive decision.**
   `shm` and `redis` cannot be mixed across the configuration, and there is no automatic fallback from one to the other — see `auth_httpsig_nonce_store` in [DIRECTIVES.md](DIRECTIVES.md#replay-prevention).
   `redis` moves the durability/scale tradeoff to a separate service you operate and secure; `shm` keeps everything in-process, at the cost of the fixed-size zone described next.
@@ -116,4 +116,4 @@ Its protection is conditional, not automatic, and has real gaps an operator shou
 - **`auth_httpsig_status_replay` only rejects under `auth_httpsig_mode enforce`.**
   Under `observe` (the default), a detected replay is still visible via `$httpsig_error` = `nonce_replayed`, but is not rejected — the same posture every other verification outcome has under `observe`.
 
-If your threat model requires replay prevention a signer cannot opt out of, this module's optional `nonce` parameter means `auth_httpsig_nonce_store` alone cannot give you that guarantee — you must additionally enforce, at your own layer, that every accepted request actually carried a `nonce`.
+If your threat model requires replay prevention a signer cannot opt out of, set `auth_httpsig_nonce_required on` together with `auth_httpsig_nonce_store`; the store alone cannot give you that guarantee, because `nonce` is an optional parameter.
