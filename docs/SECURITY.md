@@ -91,6 +91,14 @@ Its protection is conditional, not automatic, and has real gaps an operator shou
   Unlike the key-directory cache, a nonce is unique per request, so an eviction scan would hold the zone's lock for an O(n) walk on every request once the zone fills — this module deliberately does not do that (see `auth_httpsig_nonce_store_zone` in [DIRECTIVES.md](DIRECTIVES.md#auth_httpsig_nonce_store_zone)).
   Once the zone fills, every subsequent signed request fails open (`$httpsig_error` = `nonce_store_unavailable`) until nginx is restarted — a `reload` only reattaches the existing zone, it does not clear it.
   Sizing this zone for your expected peak of concurrently-unexpired nonces is the operator's primary control point; monitor for `nonce_store_unavailable` as the signal that it's undersized (or that the store needs a restart).
+- **A single valid signer can fill the `shm` zone on purpose.**
+  A nonce is stored only after the signature verifies, so an attacker without a trusted signing key cannot fill the zone.
+  But anyone holding such a key can send a stream of validly signed requests, each with a fresh `nonce`, and exhaust the zone for every signer, switching replay protection off through the fail-open path above.
+  Rate-limit per `$httpsig_keyid` at your own layer, and monitor `nonce_store_unavailable`.
+- **Redis must not evict nonce keys.**
+  With the `redis` backend, a `maxmemory-policy` such as `allkeys-lru` lets Redis drop a nonce before its TTL expires; the evicted nonce is then treated as unused and a replay is accepted.
+  This is the opposite failure mode to the `shm` zone filling up.
+  Use `noeviction`, or give nonces a dedicated Redis instance whose memory is sized for the peak of unexpired nonces.
 - **A store that can't be consulted fails the request open, not closed.**
   Redis unreachable, or the `shm` zone full, both surface as `$httpsig_error` = `nonce_store_unavailable`, and the request proceeds with its already-successful signature verdict intact (`$httpsig_verified` stays `1`).
   This module treats "can't check for a replay" the same way it treats every other internal condition it can't attribute to the client (see "Fail-open by design" above) — not as a reason to reject otherwise-valid traffic.
