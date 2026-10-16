@@ -66,6 +66,9 @@ typedef struct {
                                                            * "scheme" */
     ngx_flag_t  keyid_fallback_allow;
     ngx_flag_t  require;
+    ngx_flag_t  nonce_required;                          /* reject a verified
+                                                          * signature that has
+                                                          * no "nonce" */
     ngx_uint_t  nonce_store;                             /* off/shm/redis
                                                           * selector; each
                                                           * location
@@ -416,6 +419,14 @@ static ngx_command_t ngx_http_auth_httpsig_commands[] = {
       offsetof(ngx_http_auth_httpsig_loc_conf_t, nonce_store),
       &ngx_http_auth_httpsig_nonce_store },
 
+    { ngx_string("auth_httpsig_nonce_required"),
+      NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF |
+      NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_auth_httpsig_loc_conf_t, nonce_required),
+      NULL },
+
     { ngx_string("auth_httpsig_nonce_store_redis"),
       NGX_HTTP_MAIN_CONF | NGX_CONF_1MORE,
       ngx_http_auth_httpsig_set_nonce_store_redis,
@@ -628,6 +639,7 @@ ngx_http_auth_httpsig_create_loc_conf(ngx_conf_t *cf)
     conf->keyid_fallback_allow = NGX_CONF_UNSET;
     conf->require = NGX_CONF_UNSET;
     conf->nonce_store = NGX_CONF_UNSET_UINT;
+    conf->nonce_required = NGX_CONF_UNSET;
     conf->profile.expires_max = NGX_CONF_UNSET;
     conf->profile.max_skew = NGX_CONF_UNSET;
 
@@ -655,7 +667,7 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_auth_httpsig_loc_conf_t *conf = child;
     ngx_http_auth_httpsig_main_conf_t *mcf;
     ngx_str_t default_name = ngx_string("web-bot-auth");
-    ngx_flag_t declared, nonce_store_declared;
+    ngx_flag_t declared, nonce_store_declared, nonce_required_declared;
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode,
                               NGX_HTTP_AUTH_HTTPSIG_MODE_OFF);
@@ -837,6 +849,24 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "auth_httpsig: \"auth_httpsig_nonce_store\" is "
                            "not \"off\" but \"auth_httpsig_mode\" is "
+                           "\"off\"");
+        return NGX_CONF_ERROR;
+    }
+
+    /* Gate on "declared" like "nonce_store" above: an inherited
+     * "nonce_required on" is skipped at evaluate() time in a block that
+     * turns the store off, so only a block that sets it itself is a
+     * contradiction. */
+    nonce_required_declared = (conf->nonce_required != NGX_CONF_UNSET);
+
+    ngx_conf_merge_value(conf->nonce_required, prev->nonce_required, 0);
+
+    if (nonce_required_declared && conf->nonce_required
+        && conf->nonce_store == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: \"auth_httpsig_nonce_required\" "
+                           "is \"on\" but \"auth_httpsig_nonce_store\" is "
                            "\"off\"");
         return NGX_CONF_ERROR;
     }
@@ -2508,8 +2538,9 @@ ngx_http_auth_httpsig_nonce_verdict_find(ngx_http_request_t *r)
  * attacker without a valid key cannot burn a legitimate signer's
  * nonce). Returns the result unchanged
  * (NGX_AUTH_HTTPSIG_RESULT_OK) when no store is configured or the
- * signature carries no nonce at all (a profile that does not require
- * one has nothing for this to check), and otherwise returns
+ * signature carries no nonce and "auth_httpsig_nonce_required" is off
+ * (nothing for this to check), returns _NONCE_MISSING for a nonce-less
+ * signature when it is on, and otherwise returns
  * NGX_AUTH_HTTPSIG_RESULT_OK / _NONCE_REPLAYED / _NONCE_TOO_LONG. On
  * an unreachable store this still returns
  * NGX_AUTH_HTTPSIG_RESULT_OK and sets ctx->nonce_store_unavailable
@@ -2531,10 +2562,13 @@ ngx_http_auth_httpsig_check_nonce(ngx_http_request_t *r,
     ngx_str_t key;
     ngx_int_t rc;
 
-    if (lcf->nonce_store == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF
-        || sig->nonce.len == 0)
-    {
+    if (lcf->nonce_store == NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF) {
         return NGX_AUTH_HTTPSIG_RESULT_OK;
+    }
+
+    if (sig->nonce.len == 0) {
+        return lcf->nonce_required ? NGX_AUTH_HTTPSIG_RESULT_NONCE_MISSING
+                                   : NGX_AUTH_HTTPSIG_RESULT_OK;
     }
 
     verdict = ngx_http_auth_httpsig_nonce_verdict_find(r);

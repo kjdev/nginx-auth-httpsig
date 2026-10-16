@@ -38,6 +38,8 @@ ngx_auth_httpsig_result_name(ngx_auth_httpsig_result_t result)
         return "nonce_replayed";
     case NGX_AUTH_HTTPSIG_RESULT_NONCE_TOO_LONG:
         return "nonce_too_long";
+    case NGX_AUTH_HTTPSIG_RESULT_NONCE_MISSING:
+        return "nonce_missing";
     }
 
     return "unknown";
