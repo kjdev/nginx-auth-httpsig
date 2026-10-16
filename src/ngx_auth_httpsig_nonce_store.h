@@ -47,13 +47,16 @@
 
 /* auth_httpsig_nonce_store_redis connection parameters: vocabulary
  * matches nginx-keyval's keyval_zone_redis, minus "zone=" (this module
- * keeps a single connection, not a named store). */
+ * keeps a single connection, not a named store). `hostname` holds an IP
+ * literal: the directive resolves it once at configuration time so that
+ * connecting never blocks in a DNS lookup. */
 typedef struct {
     u_char     *hostname;
     ngx_int_t   port;
     ngx_int_t   db;
     time_t      connect_timeout;
     time_t      command_timeout;
+    time_t      backoff_max;
     ngx_flag_t  configured;
 } ngx_auth_httpsig_nonce_redis_conf_t;
 
@@ -156,13 +159,22 @@ ngx_int_t ngx_auth_httpsig_nonce_store_shm_check(
 #if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
 
 /*
+ * Next backoff window (seconds) after a failure, given the window that was
+ * in effect (0 when the previous attempt succeeded): 1, 2, 4, ... capped at
+ * `max` (a `max` below 1 behaves as 1).
+ */
+time_t ngx_auth_httpsig_nonce_store_redis_next_backoff(time_t current,
+    time_t max);
+
+/*
  * Checks and records `key` in the Redis nonce store with "SET key 1 NX
  * EX ttl". Connects lazily and keeps the connection open for the
  * worker process's lifetime (reused across requests); a failed
- * connect or command tears the connection down and starts a fixed
- * backoff window equal to `conf->connect_timeout`, so a persistently
- * unreachable Redis does not force every subsequent signed request to
- * block for a full connect timeout.
+ * connect or command tears the connection down and starts a backoff
+ * window that doubles on each consecutive failure, from 1 second up to
+ * `conf->backoff_max`, and resets on the first successful reply. A
+ * persistently unreachable Redis therefore blocks a worker for at most
+ * one connect_timeout per window instead of once per signed request.
  *
  * Return value:
  *   NGX_OK        `key` was not previously recorded and now is; no

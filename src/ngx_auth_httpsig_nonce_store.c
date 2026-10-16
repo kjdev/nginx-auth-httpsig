@@ -373,6 +373,41 @@ ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
  */
 static redisContext *ngx_auth_httpsig_nonce_redis_conn;
 static time_t ngx_auth_httpsig_nonce_redis_retry_after;
+static time_t ngx_auth_httpsig_nonce_redis_backoff;
+
+
+time_t
+ngx_auth_httpsig_nonce_store_redis_next_backoff(time_t current, time_t max)
+{
+    if (max < 1) {
+        max = 1;
+    }
+
+    if (current < 1) {
+        return 1;
+    }
+
+    return current * 2 > max ? max : current * 2;
+}
+
+
+/* ngx_time() is the cached time from the last event-loop iteration, but
+ * the failed connect/command just blocked synchronously for up to
+ * connect_timeout/command_timeout. Without refreshing it first, the
+ * backoff window would collapse to ~0 for exactly the persistently-
+ * unreachable case this backoff exists to cover. */
+static void
+ngx_auth_httpsig_nonce_store_redis_arm_backoff(
+    ngx_auth_httpsig_nonce_redis_conf_t *conf)
+{
+    ngx_time_update();
+
+    ngx_auth_httpsig_nonce_redis_backoff
+        = ngx_auth_httpsig_nonce_store_redis_next_backoff(
+              ngx_auth_httpsig_nonce_redis_backoff, conf->backoff_max);
+    ngx_auth_httpsig_nonce_redis_retry_after
+        = ngx_time() + ngx_auth_httpsig_nonce_redis_backoff;
+}
 
 
 void
@@ -478,15 +513,7 @@ ngx_auth_httpsig_nonce_store_redis_check(
     }
 
     if (ngx_auth_httpsig_nonce_store_redis_connect(conf, log) != NGX_OK) {
-        /* ngx_time() is the cached time from the last event-loop
-         * iteration; redisConnectWithTimeout() blocks synchronously for
-         * up to connect_timeout on an unreachable (not merely refusing)
-         * host, so without refreshing it here the backoff window would
-         * collapse to ~0 for exactly the persistently-unreachable case
-         * this backoff exists to cover. */
-        ngx_time_update();
-        ngx_auth_httpsig_nonce_redis_retry_after
-            = ngx_time() + conf->connect_timeout;
+        ngx_auth_httpsig_nonce_store_redis_arm_backoff(conf);
         return NGX_ABORT;
     }
 
@@ -522,11 +549,7 @@ ngx_auth_httpsig_nonce_store_redis_check(
         ngx_log_error(NGX_LOG_ERR, log, 0,
                       "auth_httpsig: failed to command redis: SET NX EX");
         ngx_auth_httpsig_nonce_store_redis_close();
-        ngx_time_update(); /* redisCommand() blocks up to command_timeout;
-                            * see the connect-failure branch above for why
-                            * the cached time needs refreshing first. */
-        ngx_auth_httpsig_nonce_redis_retry_after
-            = ngx_time() + conf->connect_timeout;
+        ngx_auth_httpsig_nonce_store_redis_arm_backoff(conf);
         return NGX_ABORT;
     }
 
@@ -540,9 +563,7 @@ ngx_auth_httpsig_nonce_store_redis_check(
                       "SET NX EX: %s", resp->str);
         freeReplyObject(resp);
         ngx_auth_httpsig_nonce_store_redis_close();
-        ngx_time_update();
-        ngx_auth_httpsig_nonce_redis_retry_after
-            = ngx_time() + conf->connect_timeout;
+        ngx_auth_httpsig_nonce_store_redis_arm_backoff(conf);
         return NGX_ABORT;
     }
 
@@ -582,6 +603,7 @@ ngx_auth_httpsig_nonce_store_redis_check(
          * healthy, so clear any stale backoff left over from an
          * earlier transient failure. */
         ngx_auth_httpsig_nonce_redis_retry_after = 0;
+        ngx_auth_httpsig_nonce_redis_backoff = 0;
     }
 
     return rc;

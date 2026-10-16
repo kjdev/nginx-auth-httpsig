@@ -198,6 +198,8 @@ static char *ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
+static ngx_int_t ngx_http_auth_httpsig_resolve_redis_host(ngx_conf_t *cf,
+    ngx_auth_httpsig_nonce_redis_conf_t *conf);
 static char *ngx_http_auth_httpsig_set_nonce_store_redis(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_auth_httpsig_set_nonce_store_zone(ngx_conf_t *cf,
@@ -1393,6 +1395,7 @@ ngx_http_auth_httpsig_set_nonce_store_redis(ngx_conf_t *cf,
     mcf->nonce_redis.db = 0;
     mcf->nonce_redis.connect_timeout = 3;
     mcf->nonce_redis.command_timeout = 3;
+    mcf->nonce_redis.backoff_max = 30;
 
     for (i = 1; i < cf->args->nelts; i++) {
         if (ngx_strncmp(value[i].data, "hostname=", 9) == 0) {
@@ -1482,6 +1485,22 @@ ngx_http_auth_httpsig_set_nonce_store_redis(ngx_conf_t *cf,
             continue;
         }
 
+        if (ngx_strncmp(value[i].data, "backoff_max=", 12) == 0) {
+            s.len = value[i].len - 12;
+            s.data = value[i].data + 12;
+
+            timeout = ngx_parse_time(&s, 1);
+            if (timeout == (time_t) NGX_ERROR || timeout == 0) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "auth_httpsig: invalid backoff_max "
+                                   "value \"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            mcf->nonce_redis.backoff_max = timeout;
+            continue;
+        }
+
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "auth_httpsig: invalid parameter \"%V\"",
                            &value[i]);
@@ -1498,9 +1517,60 @@ ngx_http_auth_httpsig_set_nonce_store_redis(ngx_conf_t *cf,
         mcf->nonce_redis.hostname = p;
     }
 
+    if (ngx_http_auth_httpsig_resolve_redis_host(cf, &mcf->nonce_redis)
+        != NGX_OK)
+    {
+        return NGX_CONF_ERROR;
+    }
+
     mcf->nonce_redis.configured = 1;
 
     return NGX_CONF_OK;
+}
+
+
+/*
+ * Replaces `hostname` with the text form of its first resolved address.
+ * hiredis resolves names with a blocking getaddrinfo() that has no
+ * timeout and runs inside the worker's event loop; resolving here keeps
+ * that out of the request path. A later change of the name's address
+ * therefore needs a reload.
+ */
+static ngx_int_t
+ngx_http_auth_httpsig_resolve_redis_host(ngx_conf_t *cf,
+    ngx_auth_httpsig_nonce_redis_conf_t *conf)
+{
+    ngx_url_t u;
+    u_char text[NGX_SOCKADDR_STRLEN];
+    u_char *p;
+    size_t len;
+
+    ngx_memzero(&u, sizeof(ngx_url_t));
+    u.host.data = conf->hostname;
+    u.host.len = ngx_strlen(conf->hostname);
+    u.port = (in_port_t) conf->port;
+
+    if (ngx_inet_resolve_host(cf->pool, &u) != NGX_OK || u.naddrs == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "auth_httpsig: failed to resolve redis hostname "
+                           "\"%s\"", conf->hostname);
+        return NGX_ERROR;
+    }
+
+    len = ngx_sock_ntop(u.addrs[0].sockaddr, u.addrs[0].socklen, text,
+                        NGX_SOCKADDR_STRLEN, 0);
+
+    p = ngx_pnalloc(cf->pool, len + 1);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(p, text, len);
+    p[len] = '\0';
+
+    conf->hostname = p;
+
+    return NGX_OK;
 }
 
 
