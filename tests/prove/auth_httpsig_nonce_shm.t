@@ -121,3 +121,138 @@ GET /t
 --- request
 GET /t
 --- error_code: 200
+
+
+=== TEST 4: a nonce-less signature is rejected when nonce_required is on
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_zone httpsig_nonce:1m;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        auth_httpsig_nonce_store shm;
+        auth_httpsig_nonce_required on;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- request
+GET /t
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n";
+--- error_code: 403
+
+
+=== TEST 5: a nonce-less signature passes when nonce_required is off (default)
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_zone httpsig_nonce:1m;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        auth_httpsig_nonce_store shm;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- request
+GET /t
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n";
+--- error_code: 200
+
+
+=== TEST 6: a nonce-less signature under nonce_required uses auth_httpsig_status_invalid
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_zone httpsig_nonce:1m;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        auth_httpsig_nonce_store shm;
+        auth_httpsig_nonce_required on;
+        auth_httpsig_status_invalid 418;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- request
+GET /t
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n";
+--- error_code: 418
+
+
+=== TEST 7: nonce_required on without a nonce store is a configuration error
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        auth_httpsig_nonce_required on;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- must_die
+--- error_log eval
+qr/"auth_httpsig_nonce_required" is "on" but "auth_httpsig_nonce_store" is "off"/
