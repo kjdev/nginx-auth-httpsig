@@ -72,8 +72,7 @@ typedef struct {
                                                           * inherits the
                                                           * parent's
                                                           * choice like
-                                                          * "mode" (ADR
-                                                          * 0051) */
+                                                          * "mode" */
     ngx_http_auth_httpsig_jwks_conf_t       jwks;
     ngx_http_auth_httpsig_profile_conf_t    profile;
     ngx_http_auth_httpsig_directory_conf_t  directory;
@@ -100,7 +99,7 @@ typedef struct {
                                                          * the whole config; OFF (0, the
                                                          * pcalloc default) means "none
                                                          * selected yet", checked/set while
-                                                         * merging each location (ADR 0051) */
+                                                         * merging each location */
     ngx_auth_httpsig_nonce_redis_conf_t  nonce_redis;
     ngx_shm_zone_t                      *nonce_shm_zone;
 } ngx_http_auth_httpsig_main_conf_t;
@@ -1219,8 +1218,9 @@ ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
 
 /*
  * Shared by "auth_httpsig_key_cache_zone" and "auth_httpsig_nonce_store_zone":
- * both take "<name>:<size>" with an 8-page floor and register a zone under
- * this module's tag.
+ * both take "<name>:<size>" with the same syntax and 8-page floor as
+ * limit_req_zone's "zone=" parameter, and register a zone under this
+ * module's tag.
  */
 static ngx_shm_zone_t *
 ngx_http_auth_httpsig_add_zone(ngx_conf_t *cf, ngx_str_t *arg,
@@ -1289,15 +1289,6 @@ ngx_http_auth_httpsig_add_zone(ngx_conf_t *cf, ngx_str_t *arg,
 }
 
 
-
-
-/*
- * "<name>:<size>" follows the same syntax and 8-page floor as
- * limit_req_zone's "zone=" parameter; zone-name collisions across
- * "auth_httpsig_key_cache_zone" and other modules' shared-memory zones
- * are already caught by ngx_shared_memory_add(), so no separate check is
- * needed here.
- */
 static char *
 ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf)
@@ -1352,6 +1343,13 @@ ngx_http_auth_httpsig_set_nonce_store_redis(ngx_conf_t *cf,
         if (ngx_strncmp(value[i].data, "hostname=", 9) == 0) {
             s.len = value[i].len - 9;
             s.data = value[i].data + 9;
+
+            if (s.len == 0) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "auth_httpsig: invalid hostname value "
+                                   "\"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
 
             p = ngx_pnalloc(cf->pool, s.len + 1);
             if (p == NULL) {
@@ -1454,7 +1452,7 @@ ngx_http_auth_httpsig_set_nonce_store_redis(ngx_conf_t *cf,
 /*
  * Same "<name>:<size>" syntax and 8-page floor as
  * "auth_httpsig_key_cache_zone"; kept as a separate zone (not shared)
- * because the two caches have opposite hit semantics (ADR 0049).
+ * because the two caches have opposite hit semantics.
  */
 static char *
 ngx_http_auth_httpsig_set_nonce_store_zone(ngx_conf_t *cf,
@@ -2506,20 +2504,20 @@ ngx_http_auth_httpsig_nonce_verdict_find(ngx_http_request_t *r)
 
 /*
  * Consults the configured nonce store for a signature that has
- * already passed Ed25519 verification (ADR 0047 decision 3: never
- * write before that, so an attacker without a valid key cannot burn a
- * legitimate signer's nonce). Returns the result unchanged
+ * already passed Ed25519 verification (never write before that, so an
+ * attacker without a valid key cannot burn a legitimate signer's
+ * nonce). Returns the result unchanged
  * (NGX_AUTH_HTTPSIG_RESULT_OK) when no store is configured or the
  * signature carries no nonce at all (a profile that does not require
  * one has nothing for this to check), and otherwise returns
  * NGX_AUTH_HTTPSIG_RESULT_OK / _NONCE_REPLAYED / _NONCE_TOO_LONG. On
  * an unreachable store this still returns
  * NGX_AUTH_HTTPSIG_RESULT_OK and sets ctx->nonce_store_unavailable
- * (fail-open); an oversized nonce is NOT fail-open (ADR 0051 decision
- * 7). ctx->internal_error is set, and NGX_AUTH_HTTPSIG_RESULT_OK is
- * still returned so the caller's ADR-0038 NOT_SIGNED/OK handling
- * covers it, on pool allocation failure or a caller-bug return from
- * the store backend.
+ * (fail-open); an oversized nonce is NOT fail-open.
+ * ctx->internal_error is set, and NGX_AUTH_HTTPSIG_RESULT_OK is
+ * still returned so the caller's NOT_SIGNED/OK handling covers it, on
+ * pool allocation failure or a caller-bug return from the store
+ * backend.
  */
 static ngx_auth_httpsig_result_t
 ngx_http_auth_httpsig_check_nonce(ngx_http_request_t *r,
@@ -2599,12 +2597,12 @@ ngx_http_auth_httpsig_check_nonce(ngx_http_request_t *r,
 #endif
 
     default:
-        /* Reachable only when "auth_httpsig_nonce_store redis" is
-         * configured but the module was built without hiredis (the
-         * REDIS case above does not exist in that build); the directive
-         * parser accepts this combination. Fail open exactly like an
-         * unreachable Redis instead of refusing every request. */
-        rc = NGX_ABORT;
+        /* Unreachable: merge_loc_conf() rejects "redis" on a build
+         * without hiredis and an "off" store returned before this
+         * switch. Report it as an internal error rather than failing
+         * open, so a loosened validation is noticed instead of silently
+         * disabling replay checks. */
+        rc = NGX_ERROR;
         break;
     }
 
@@ -3036,7 +3034,7 @@ ngx_http_auth_httpsig_variable_error(ngx_http_request_t *r,
     } else if (ctx->nonce_store_unavailable) {
         /* Checked ahead of the plain OK/NOT_SIGNED unset case below:
          * the store-unavailable fail-open path leaves ctx->result at
-         * OK (ADR 0050), so without this branch the outage would be
+         * OK, so without this branch the outage would be
          * invisible on $httpsig_error. */
         name = "nonce_store_unavailable";
 

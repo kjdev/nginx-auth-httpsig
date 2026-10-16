@@ -6,13 +6,12 @@
  * derivation, the SHM rbtree + slab nonce store, and the Redis SET NX EX
  * client for replay-prevention nonce storage (auth_httpsig_nonce_store_zone
  * / auth_httpsig_nonce_store_redis). The SHM backend mirrors
- * ngx_auth_httpsig_cache.c's rbtree + ngx_slab_pool_t structure (ADR 0049)
+ * ngx_auth_httpsig_cache.c's rbtree + ngx_slab_pool_t structure
  * but with inverted hit semantics (a live node is a replay, not a value to
  * reuse) and no eviction: a full zone fails open instead of evicting an
  * expired node, since nonces are unique per request and an LRU/victim scan
  * would be an O(n) walk under the zone mutex on every request once the
- * zone fills. The Redis backend is carried end to end (ADR 0046, ADR
- * 0047, ADR 0052).
+ * zone fills. The Redis backend is carried end to end.
  */
 
 #ifndef NGX_AUTH_HTTPSIG_NONCE_STORE_H
@@ -31,26 +30,24 @@
  * Fixed upper bound on a signature's nonce length. A signer-controlled
  * value this large is rejected outright rather than truncated or stored
  * unbounded, so an attacker cannot bypass replay detection by sending an
- * oversized nonce that the store silently drops (ADR 0051 decision 7).
+ * oversized nonce that the store silently drops.
  */
 #define NGX_AUTH_HTTPSIG_NONCE_MAX_LEN   256
 
 /*
  * Fixed namespace prefix for store keys. This module has no "zone name"
- * of its own to scope by (unlike nginx-keyval's keyval_zone_redis, ADR
- * 0051 decision 4 drops "zone="), so without a prefix a nonce key could
- * collide with unrelated data an operator keeps in the same Redis
- * database.
+ * of its own to scope by (unlike nginx-keyval's keyval_zone_redis, which
+ * has "zone="), so without a prefix a nonce key could collide with
+ * unrelated data an operator keeps in the same Redis database.
  */
 #define NGX_AUTH_HTTPSIG_NONCE_KEY_PREFIX       "auth_httpsig:nonce:"
 #define NGX_AUTH_HTTPSIG_NONCE_KEY_PREFIX_LEN   \
         (sizeof(NGX_AUTH_HTTPSIG_NONCE_KEY_PREFIX) - 1)
 
 
-/* auth_httpsig_nonce_store_redis connection parameters (ADR 0046 decision
- * 4, ADR 0051 decision 4): vocabulary matches nginx-keyval's
- * keyval_zone_redis, minus "zone=" (this module keeps a single
- * connection, not a named store). */
+/* auth_httpsig_nonce_store_redis connection parameters: vocabulary
+ * matches nginx-keyval's keyval_zone_redis, minus "zone=" (this module
+ * keeps a single connection, not a named store). */
 typedef struct {
     u_char     *hostname;
     ngx_int_t   port;
@@ -120,12 +117,11 @@ ngx_int_t ngx_auth_httpsig_nonce_store_key(ngx_pool_t *pool,
 /*
  * Derives the store TTL (seconds) from a verified signature's `expires`
  * and the profile's `max_skew`, evaluated at the same `now` the time-
- * window check itself used (ADR 0047 decision 2). Clamped to at least
+ * window check itself used. Clamped to at least
  * 1: profile_verify()'s time-window check accepts "now == expires +
  * max_skew" (TTL 0), but ngx_auth_httpsig_nonce_store_shm_check()
  * rejects ttl < 1 as a caller-bug NGX_ERROR, so the floor is a
- * store-validity requirement, not an additional policy bound -- ADR
- * 0047 deliberately sets none.
+ * store-validity requirement, not an additional policy bound.
  */
 time_t ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
     time_t now);
@@ -133,7 +129,7 @@ time_t ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
 /*
  * Checks and records `key` in the SHM nonce store, expiring at `now +
  * ttl`. A single ngx_slab_alloc_locked() attempt backs a new entry; there
- * is no eviction (ADR 0049 decision 3, ADR 0053) -- a full zone fails
+ * is no eviction -- a full zone fails
  * open immediately rather than scanning for a node to reclaim.
  *
  * Return value: same contract as
@@ -162,7 +158,7 @@ ngx_int_t ngx_auth_httpsig_nonce_store_shm_check(
  * connect or command tears the connection down and starts a fixed
  * backoff window equal to `conf->connect_timeout`, so a persistently
  * unreachable Redis does not force every subsequent signed request to
- * block for a full connect timeout (ADR 0052).
+ * block for a full connect timeout.
  *
  * Return value:
  *   NGX_OK        `key` was not previously recorded and now is; no

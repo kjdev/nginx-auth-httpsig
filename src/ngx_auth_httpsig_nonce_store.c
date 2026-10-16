@@ -203,7 +203,7 @@ ngx_auth_httpsig_nonce_store_shm_check(
                                + key->len);
 
     if (cn == NULL) {
-        /* No eviction attempt (ADR 0049 decision 3, ADR 0053): nonces are
+        /* No eviction attempt: nonces are
          * unique per request, so an expired node is never freed by a
          * later lookup for the same key, and a victim scan would be an
          * O(n) walk under this mutex on every request once the zone is
@@ -302,7 +302,7 @@ ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
 #if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
 
 /*
- * Worker-local, lazily-connected Redis connection (ADR 0052): reused
+ * Worker-local, lazily-connected Redis connection: reused
  * across requests instead of reconnecting per request, since this
  * module's target traffic (bot/agent requests hitting a signed
  * endpoint) can mean every request needs a nonce check, and
