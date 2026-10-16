@@ -9,10 +9,14 @@
 #include "ngx_auth_httpsig_nonce_store.h"
 
 
-/* Once the zone is full, it stays full (nonces are unique, so no later
- * lookup ever frees an expired node) -- throttles the exhaustion WARN to
- * once per this many seconds instead of once per request. */
+/* A zone that stays full (live nodes only) fails open on every request --
+ * throttles the exhaustion WARN to once per this many seconds instead of
+ * once per request. */
 #define NGX_AUTH_HTTPSIG_NONCE_STORE_NOMEM_LOG_INTERVAL 60
+
+/* Expired nodes inspected per call. Each insert frees up to this many, so
+ * reclaim outpaces insertion and the work under the zone lock stays O(1). */
+#define NGX_AUTH_HTTPSIG_NONCE_STORE_RECLAIM_BATCH      2
 
 
 static void ngx_auth_httpsig_nonce_store_rbtree_insert_value(
@@ -21,6 +25,8 @@ static void ngx_auth_httpsig_nonce_store_rbtree_insert_value(
 static ngx_auth_httpsig_nonce_store_node_t *ngx_auth_httpsig_nonce_store_find(
     ngx_auth_httpsig_nonce_store_ctx_t *ctx, uint32_t hash,
     const ngx_str_t *key);
+static ngx_uint_t ngx_auth_httpsig_nonce_store_reclaim(
+    ngx_auth_httpsig_nonce_store_ctx_t *ctx, time_t now);
 
 
 ngx_int_t
@@ -57,6 +63,8 @@ ngx_auth_httpsig_nonce_store_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_auth_httpsig_nonce_store_rbtree_insert_value);
+
+    ngx_queue_init(&ctx->sh->fifo);
 
     ctx->sh->last_nomem_log = 0;
 
@@ -156,6 +164,43 @@ ngx_auth_httpsig_nonce_store_find(ngx_auth_httpsig_nonce_store_ctx_t *ctx,
 }
 
 
+/*
+ * Frees up to RECLAIM_BATCH expired nodes from the head of the insertion
+ * order. Stops at the first live head: a later node may have a shorter TTL,
+ * but it is freed once the head expires (bounded by expires_max + max_skew),
+ * which keeps the scan O(1) regardless of what signers choose for `expires`.
+ * Caller holds shpool->mutex. Returns the number of nodes freed.
+ */
+static ngx_uint_t
+ngx_auth_httpsig_nonce_store_reclaim(ngx_auth_httpsig_nonce_store_ctx_t *ctx,
+    time_t now)
+{
+    ngx_uint_t n;
+    ngx_queue_t *q;
+    ngx_auth_httpsig_nonce_store_node_t *cn;
+
+    for (n = 0; n < NGX_AUTH_HTTPSIG_NONCE_STORE_RECLAIM_BATCH; n++) {
+        if (ngx_queue_empty(&ctx->sh->fifo)) {
+            break;
+        }
+
+        q = ngx_queue_head(&ctx->sh->fifo);
+        cn = ngx_queue_data(q, ngx_auth_httpsig_nonce_store_node_t, queue);
+
+        /* Same boundary as the live check: expires_at == now is live. */
+        if (cn->expires_at >= now) {
+            break;
+        }
+
+        ngx_queue_remove(q);
+        ngx_rbtree_delete(&ctx->sh->rbtree, &cn->node);
+        ngx_slab_free_locked(ctx->shpool, cn);
+    }
+
+    return n;
+}
+
+
 ngx_int_t
 ngx_auth_httpsig_nonce_store_shm_check(
     ngx_auth_httpsig_nonce_store_ctx_t *ctx, ngx_str_t *key, time_t ttl,
@@ -194,23 +239,31 @@ ngx_auth_httpsig_nonce_store_shm_check(
          * reallocated. */
         cn->expires_at = now + ttl;
 
+        /* Moved to the tail so the queue head stays the oldest insertion. */
+        ngx_queue_remove(&cn->queue);
+        ngx_queue_insert_tail(&ctx->sh->fifo, &cn->queue);
+
         ngx_shmtx_unlock(&ctx->shpool->mutex);
         return NGX_OK;
     }
+
+    ngx_auth_httpsig_nonce_store_reclaim(ctx, now);
 
     cn = ngx_slab_alloc_locked(ctx->shpool,
                                sizeof(ngx_auth_httpsig_nonce_store_node_t)
                                + key->len);
 
+    if (cn == NULL && ngx_auth_httpsig_nonce_store_reclaim(ctx, now) > 0) {
+        /* The first pass freed nothing useful for this size (e.g. slab
+         * size classes differ); one more bounded pass before failing open. */
+        cn = ngx_slab_alloc_locked(ctx->shpool,
+                                   sizeof(ngx_auth_httpsig_nonce_store_node_t)
+                                   + key->len);
+    }
+
     if (cn == NULL) {
-        /* No eviction attempt: nonces are
-         * unique per request, so an expired node is never freed by a
-         * later lookup for the same key, and a victim scan would be an
-         * O(n) walk under this mutex on every request once the zone is
-         * full -- unlike the key-directory cache's small per-host node
-         * count. Once full, the zone stays full until nginx restarts
-         * (reload reattaches the existing tree via init_zone); operators
-         * size the zone accordingly. */
+        /* Only live nodes remain at the head: evicting one would drop a
+         * valid replay record, so fail open instead. */
         do_log = 0;
 
         if (now - ctx->sh->last_nomem_log
@@ -243,6 +296,7 @@ ngx_auth_httpsig_nonce_store_shm_check(
     cn->expires_at = now + ttl;
 
     ngx_rbtree_insert(&ctx->sh->rbtree, &cn->node);
+    ngx_queue_insert_tail(&ctx->sh->fifo, &cn->queue);
 
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 

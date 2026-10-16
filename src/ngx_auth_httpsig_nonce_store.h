@@ -60,21 +60,20 @@ typedef struct {
 typedef struct {
     ngx_rbtree_t       rbtree;
     ngx_rbtree_node_t  sentinel;
+    ngx_queue_t        fifo; /* nodes in insertion order, oldest first;
+                              * touched only under shpool->mutex. Expired
+                              * nodes are reclaimed from the head. */
     time_t             last_nomem_log; /* zone-wide, touched only under
-                                        * shpool->mutex. Without eviction, a
-                                        * full zone stays full (nonces are
-                                        * unique, so no later lookup ever
-                                        * frees an expired node); this
-                                        * throttles the exhaustion WARN to
-                                        * once per
+                                        * shpool->mutex. Throttles the
+                                        * exhaustion WARN to once per
                                         * NGX_AUTH_HTTPSIG_NONCE_STORE_NOMEM_LOG_INTERVAL
                                         * seconds instead of once per
-                                        * request for as long as the zone
-                                        * stays full. */
+                                        * request while the zone is full. */
 } ngx_auth_httpsig_nonce_store_sh_t;
 
 typedef struct {
     ngx_rbtree_node_t  node;
+    ngx_queue_t        queue;
     ngx_str_t          nonce_key; /* immutable once allocated; stored right
                                    * after this struct in the same slab
                                    * allocation. Named distinctly from
@@ -128,9 +127,11 @@ time_t ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
 
 /*
  * Checks and records `key` in the SHM nonce store, expiring at `now +
- * ttl`. A single ngx_slab_alloc_locked() attempt backs a new entry; there
- * is no eviction -- a full zone fails
- * open immediately rather than scanning for a node to reclaim.
+ * ttl`. Before a new entry is allocated, at most a small fixed number of
+ * expired nodes are reclaimed from the head of the insertion-ordered list
+ * (so the work under the zone lock is O(1)); if the allocation still fails,
+ * one more bounded reclaim is attempted before failing open. A live node is
+ * never evicted.
  *
  * Return value: same contract as
  * ngx_auth_httpsig_nonce_store_redis_check():
@@ -140,7 +141,8 @@ time_t ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
  *   NGX_DECLINED  `key` is already recorded and still live; this is a
  *                 replay. The existing expiry is left untouched (SET NX
  *                 does not refresh a live key's TTL either).
- *   NGX_ABORT     the zone has no room for a new entry. Caller must fail
+ *   NGX_ABORT     the zone has no room for a new entry even after
+ *                 reclaiming expired ones. Caller must fail
  *                 open, not treat this as a replay.
  *   NGX_ERROR     a required argument is invalid; indicates a caller
  *                 bug, never an ordinary runtime condition.
