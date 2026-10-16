@@ -87,10 +87,14 @@ Its protection is conditional, not automatic, and has real gaps an operator shou
 - **Backend choice is a single, global, mutually exclusive decision.**
   `shm` and `redis` cannot be mixed across the configuration, and there is no automatic fallback from one to the other — see `auth_httpsig_nonce_store` in [DIRECTIVES.md](DIRECTIVES.md#replay-prevention).
   `redis` moves the durability/scale tradeoff to a separate service you operate and secure; `shm` keeps everything in-process, at the cost of the fixed-size zone described next.
-- **The `shm` backend never evicts.**
-  Unlike the key-directory cache, a nonce is unique per request, so an eviction scan would hold the zone's lock for an O(n) walk on every request once the zone fills — this module deliberately does not do that (see `auth_httpsig_nonce_store_zone` in [DIRECTIVES.md](DIRECTIVES.md#auth_httpsig_nonce_store_zone)).
-  Once the zone fills, every subsequent signed request fails open (`$httpsig_error` = `nonce_store_unavailable`) until nginx is restarted — a `reload` only reattaches the existing zone, it does not clear it.
-  Sizing this zone for your expected peak of concurrently-unexpired nonces is the operator's primary control point; monitor for `nonce_store_unavailable` as the signal that it's undersized (or that the store needs a restart).
+- **The `shm` backend reclaims only expired entries.**
+  Each new entry frees up to two expired ones from the oldest end of the insertion order, so the work under the zone's lock is constant per request and the zone recovers by itself once its entries expire (see `auth_httpsig_nonce_store_zone` in [DIRECTIVES.md](DIRECTIVES.md#auth_httpsig_nonce_store_zone)).
+  A live entry is never evicted, because dropping it would let a replay through.
+  If the zone is full of live entries, every new signed request fails open (`$httpsig_error` = `nonce_store_unavailable`) until some of them expire.
+  Reclaim stops at the first live entry in that order, so an expired entry stored behind a longer-lived one is not freed until the older one expires.
+  The signer chooses `expires`, so a single request from a trusted signer with `expires` at the profile's maximum lifetime (up to 24 hours) is enough to hold the head of the order for that long.
+  While it does, no later entry is reclaimed, ordinary traffic alone can fill the zone, and every new signed request then fails open.
+  Size this zone for the peak of nonces stored over the profile's maximum signature lifetime plus `max_skew`, not only for those currently unexpired; monitor for `nonce_store_unavailable` as the signal that it's undersized.
 - **A single valid signer can fill the `shm` zone on purpose.**
   A nonce is stored only after the signature verifies, so an attacker without a trusted signing key cannot fill the zone.
   But anyone holding such a key can send a stream of validly signed requests, each with a fresh `nonce`, and exhaust the zone for every signer, switching replay protection off through the fail-open path above.

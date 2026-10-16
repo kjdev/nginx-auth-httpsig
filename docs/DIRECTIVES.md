@@ -561,12 +561,18 @@ same rbtree-plus-slab storage, since the two caches have opposite hit
 semantics: a key-directory cache hit means reuse, while a nonce-store hit
 means reject as a replay.
 
-This zone has no eviction.
-Once full, a new entry fails to allocate and the request fails open
-(`$httpsig_error` = `nonce_store_unavailable`) rather than reclaiming an
-existing one, and the zone stays full — nginx reload reattaches it as-is,
-so only a full restart clears it.
-Sizing this zone is therefore the operator's primary control point; see
+Expired entries are reclaimed in insertion order: each new entry frees up
+to two expired ones from the oldest end, so the zone recovers on its own
+once its entries expire.
+A live entry is never evicted.
+If the zone is full of live entries, a new entry fails to allocate and the
+request fails open (`$httpsig_error` = `nonce_store_unavailable`).
+Reclaim stops at the first live entry, so one entry with a long `expires`
+(up to the profile's maximum lifetime) delays reclaim of everything stored
+after it until that entry expires.
+Size this zone for the nonces stored over the maximum signature lifetime
+plus `max_skew`, not only for those currently unexpired.
+This is the operator's primary control point; see
 [SECURITY.md](SECURITY.md#replay) for guidance.
 
 ### Nonce key, TTL, and size limit
