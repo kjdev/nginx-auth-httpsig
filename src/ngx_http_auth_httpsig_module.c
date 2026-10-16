@@ -656,7 +656,7 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_auth_httpsig_loc_conf_t *conf = child;
     ngx_http_auth_httpsig_main_conf_t *mcf;
     ngx_str_t default_name = ngx_string("web-bot-auth");
-    ngx_flag_t declared;
+    ngx_flag_t declared, nonce_store_declared;
 
     ngx_conf_merge_uint_value(conf->mode, prev->mode,
                               NGX_HTTP_AUTH_HTTPSIG_MODE_OFF);
@@ -821,10 +821,18 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         return NGX_CONF_ERROR;
     }
 
+    /* Gate on "declared" like "auth_httpsig_agent_allow" above: a
+     * "nonce_store" set at http/server level is inherited by blocks
+     * that leave "auth_httpsig_mode" unset or "off", and the check at
+     * evaluate() time already skips those, so only a block that sets
+     * both is a contradiction. */
+    nonce_store_declared = (conf->nonce_store != NGX_CONF_UNSET_UINT);
+
     ngx_conf_merge_uint_value(conf->nonce_store, prev->nonce_store,
                               NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF);
 
-    if (conf->nonce_store != NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF
+    if (nonce_store_declared
+        && conf->nonce_store != NGX_HTTP_AUTH_HTTPSIG_NONCE_STORE_OFF
         && conf->mode == NGX_HTTP_AUTH_HTTPSIG_MODE_OFF)
     {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
