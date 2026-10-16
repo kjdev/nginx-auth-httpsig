@@ -345,6 +345,10 @@ ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
 
     ttl = expires + (int64_t) max_skew - (int64_t) now;
 
+    /* Only now == expires + max_skew reaches here with ttl == 0:
+     * profile_verify() still accepts that instant, but a zero TTL would
+     * read as already expired in the shm store and is an error for
+     * Redis "EX". */
     if (ttl < 1) {
         ttl = 1;
     }
