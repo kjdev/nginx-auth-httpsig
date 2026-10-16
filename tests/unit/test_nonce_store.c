@@ -298,7 +298,7 @@ TEST(nonce_store_shm_check_aborts_when_zone_is_full)
 
     /* Room for exactly one node, so the second insert has nowhere to go
      * and must fail open (NGX_ABORT) rather than evict -- this store has
-     * no eviction path (ADR 0053). */
+     * no eviction path. */
     budget = nonce_store_zone_overhead(TEST_ZONE_NAME)
              + sizeof(ngx_auth_httpsig_nonce_store_node_t) + key_a.len;
 
