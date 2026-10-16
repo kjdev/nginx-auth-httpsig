@@ -405,6 +405,7 @@ ngx_auth_httpsig_nonce_store_redis_check(
 {
     redisReply *resp;
     ngx_int_t rc;
+    ngx_flag_t retried = 0;
 
     if (conf == NULL || key == NULL || ttl < 1) {
         return NGX_ERROR;
@@ -438,6 +439,25 @@ ngx_auth_httpsig_nonce_store_redis_check(
                         "SET %b 1 NX EX %ld",
                         key->data, key->len, (long) (ttl + 1));
 
+    /* A connection that the server (or a middlebox) closed while idle
+     * only shows up as an error on the first command sent over it, so
+     * that failure says nothing about Redis being down: reconnect and
+     * retry once before backing off. A timeout is not retried, since
+     * the retry would block for command_timeout again. */
+    if (resp == NULL
+        && (ngx_auth_httpsig_nonce_redis_conn->err == REDIS_ERR_IO
+            || ngx_auth_httpsig_nonce_redis_conn->err == REDIS_ERR_EOF))
+    {
+        ngx_auth_httpsig_nonce_store_redis_close();
+
+        if (ngx_auth_httpsig_nonce_store_redis_connect(conf, log) == NGX_OK) {
+            retried = 1;
+            resp = redisCommand(ngx_auth_httpsig_nonce_redis_conn,
+                                "SET %b 1 NX EX %ld",
+                                key->data, key->len, (long) (ttl + 1));
+        }
+    }
+
     if (resp == NULL) {
         ngx_log_error(NGX_LOG_ERR, log, 0,
                       "auth_httpsig: failed to command redis: SET NX EX");
@@ -467,7 +487,9 @@ ngx_auth_httpsig_nonce_store_redis_check(
     }
 
     if (resp->type == REDIS_REPLY_NIL) {
-        rc = NGX_DECLINED;
+        /* After a retry the first SET may have landed with only its reply
+         * lost, so NIL can be this request's own write, not a replay. */
+        rc = retried ? NGX_ABORT : NGX_DECLINED;
 
     } else if (resp->type == REDIS_REPLY_STATUS
                && resp->len == sizeof("OK") - 1
