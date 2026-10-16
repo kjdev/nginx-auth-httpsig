@@ -60,9 +60,11 @@ typedef struct {
 typedef struct {
     ngx_rbtree_t       rbtree;
     ngx_rbtree_node_t  sentinel;
-    ngx_queue_t        fifo; /* nodes in insertion order, oldest first;
-                              * touched only under shpool->mutex. Expired
-                              * nodes are reclaimed from the head. */
+    ngx_rbtree_t       exp_rbtree; /* the same nodes keyed by expires_at;
+                                    * touched only under shpool->mutex.
+                                    * Expired nodes are reclaimed from its
+                                    * minimum. */
+    ngx_rbtree_node_t  exp_sentinel;
     time_t             last_nomem_log; /* zone-wide, touched only under
                                         * shpool->mutex. Throttles the
                                         * exhaustion WARN to once per
@@ -72,8 +74,8 @@ typedef struct {
 } ngx_auth_httpsig_nonce_store_sh_t;
 
 typedef struct {
-    ngx_rbtree_node_t  node;
-    ngx_queue_t        queue;
+    ngx_rbtree_node_t  node;     /* keyed by the crc32 of nonce_key */
+    ngx_rbtree_node_t  exp_node; /* keyed by expires_at */
     ngx_str_t          nonce_key; /* immutable once allocated; stored right
                                    * after this struct in the same slab
                                    * allocation. Named distinctly from
@@ -128,10 +130,10 @@ time_t ngx_auth_httpsig_nonce_store_ttl(int64_t expires, time_t max_skew,
 /*
  * Checks and records `key` in the SHM nonce store, expiring at `now +
  * ttl`. Before a new entry is allocated, at most a small fixed number of
- * expired nodes are reclaimed from the head of the insertion-ordered list
- * (so the work under the zone lock is O(1)); if the allocation still fails,
- * one more bounded reclaim is attempted before failing open. A live node is
- * never evicted.
+ * expired nodes are reclaimed in expires_at order (O(log n) each under the
+ * zone lock, independent of the order signers' `expires` arrive in); if the
+ * allocation still fails, one more bounded reclaim is attempted before
+ * failing open. A live node is never evicted.
  *
  * Return value: same contract as
  * ngx_auth_httpsig_nonce_store_redis_check():

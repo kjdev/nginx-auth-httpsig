@@ -14,8 +14,8 @@
  * once per request. */
 #define NGX_AUTH_HTTPSIG_NONCE_STORE_NOMEM_LOG_INTERVAL 60
 
-/* Expired nodes inspected per call. Each insert frees up to this many, so
- * reclaim outpaces insertion and the work under the zone lock stays O(1). */
+/* Expired nodes freed per call. Each insert frees up to this many, so
+ * reclaim outpaces insertion and the work under the zone lock stays bounded. */
 #define NGX_AUTH_HTTPSIG_NONCE_STORE_RECLAIM_BATCH      2
 
 
@@ -64,7 +64,8 @@ ngx_auth_httpsig_nonce_store_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_auth_httpsig_nonce_store_rbtree_insert_value);
 
-    ngx_queue_init(&ctx->sh->fifo);
+    ngx_rbtree_init(&ctx->sh->exp_rbtree, &ctx->sh->exp_sentinel,
+                    ngx_rbtree_insert_timer_value);
 
     ctx->sh->last_nomem_log = 0;
 
@@ -165,10 +166,9 @@ ngx_auth_httpsig_nonce_store_find(ngx_auth_httpsig_nonce_store_ctx_t *ctx,
 
 
 /*
- * Frees up to RECLAIM_BATCH expired nodes from the head of the insertion
- * order. Stops at the first live head: a later node may have a shorter TTL,
- * but it is freed once the head expires (bounded by expires_max + max_skew),
- * which keeps the scan O(1) regardless of what signers choose for `expires`.
+ * Frees up to RECLAIM_BATCH expired nodes, earliest expires_at first. The
+ * order is by expiry, not insertion, so one long-lived entry cannot hold
+ * back shorter-lived entries inserted after it.
  * Caller holds shpool->mutex. Returns the number of nodes freed.
  */
 static ngx_uint_t
@@ -176,23 +176,25 @@ ngx_auth_httpsig_nonce_store_reclaim(ngx_auth_httpsig_nonce_store_ctx_t *ctx,
     time_t now)
 {
     ngx_uint_t n;
-    ngx_queue_t *q;
+    ngx_rbtree_node_t *min;
     ngx_auth_httpsig_nonce_store_node_t *cn;
 
     for (n = 0; n < NGX_AUTH_HTTPSIG_NONCE_STORE_RECLAIM_BATCH; n++) {
-        if (ngx_queue_empty(&ctx->sh->fifo)) {
+        if (ctx->sh->exp_rbtree.root == ctx->sh->exp_rbtree.sentinel) {
             break;
         }
 
-        q = ngx_queue_head(&ctx->sh->fifo);
-        cn = ngx_queue_data(q, ngx_auth_httpsig_nonce_store_node_t, queue);
+        min = ngx_rbtree_min(ctx->sh->exp_rbtree.root,
+                             ctx->sh->exp_rbtree.sentinel);
+        cn = ngx_rbtree_data(min, ngx_auth_httpsig_nonce_store_node_t,
+                             exp_node);
 
         /* Same boundary as the live check: expires_at == now is live. */
         if (cn->expires_at >= now) {
             break;
         }
 
-        ngx_queue_remove(q);
+        ngx_rbtree_delete(&ctx->sh->exp_rbtree, &cn->exp_node);
         ngx_rbtree_delete(&ctx->sh->rbtree, &cn->node);
         ngx_slab_free_locked(ctx->shpool, cn);
     }
@@ -237,11 +239,10 @@ ngx_auth_httpsig_nonce_store_shm_check(
          * is already stored (find() matched on it), so the existing
          * slab allocation is reused in place rather than freed and
          * reallocated. */
+        ngx_rbtree_delete(&ctx->sh->exp_rbtree, &cn->exp_node);
         cn->expires_at = now + ttl;
-
-        /* Moved to the tail so the queue head stays the oldest insertion. */
-        ngx_queue_remove(&cn->queue);
-        ngx_queue_insert_tail(&ctx->sh->fifo, &cn->queue);
+        cn->exp_node.key = (ngx_rbtree_key_t) cn->expires_at;
+        ngx_rbtree_insert(&ctx->sh->exp_rbtree, &cn->exp_node);
 
         ngx_shmtx_unlock(&ctx->shpool->mutex);
         return NGX_OK;
@@ -262,8 +263,8 @@ ngx_auth_httpsig_nonce_store_shm_check(
     }
 
     if (cn == NULL) {
-        /* Only live nodes remain at the head: evicting one would drop a
-         * valid replay record, so fail open instead. */
+        /* Only live nodes remain: evicting one would drop a valid replay
+         * record, so fail open instead. */
         do_log = 0;
 
         if (now - ctx->sh->last_nomem_log
@@ -294,9 +295,10 @@ ngx_auth_httpsig_nonce_store_shm_check(
 
     cn->node.key = hash;
     cn->expires_at = now + ttl;
+    cn->exp_node.key = (ngx_rbtree_key_t) cn->expires_at;
 
     ngx_rbtree_insert(&ctx->sh->rbtree, &cn->node);
-    ngx_queue_insert_tail(&ctx->sh->fifo, &cn->queue);
+    ngx_rbtree_insert(&ctx->sh->exp_rbtree, &cn->exp_node);
 
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 
