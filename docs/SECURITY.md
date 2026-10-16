@@ -99,6 +99,11 @@ Its protection is conditional, not automatic, and has real gaps an operator shou
   With the `redis` backend, a `maxmemory-policy` such as `allkeys-lru` lets Redis drop a nonce before its TTL expires; the evicted nonce is then treated as unused and a replay is accepted.
   This is the opposite failure mode to the `shm` zone filling up.
   Use `noeviction`, or give nonces a dedicated Redis instance whose memory is sized for the peak of unexpired nonces.
+  With `noeviction`, a full instance answers `OOM` and the check fails open instead.
+- **The Redis connection is synchronous and unauthenticated.**
+  Connecting and every nonce check block the worker for up to `connect_timeout` / `command_timeout`, and resolving a DNS `hostname` is not bounded by `connect_timeout` at all; use an IP address.
+  There is no `AUTH` or TLS support, and an instance with `requirepass` answers `NOAUTH`, which fails open permanently.
+  Run it on a trusted network only, ideally on loopback or a private link, and treat anyone who can reach it as able to forge or delete nonce records.
 - **A store that can't be consulted fails the request open, not closed.**
   Redis unreachable, or the `shm` zone full, both surface as `$httpsig_error` = `nonce_store_unavailable`, and the request proceeds with its already-successful signature verdict intact (`$httpsig_verified` stays `1`).
   This module treats "can't check for a replay" the same way it treats every other internal condition it can't attribute to the client (see "Fail-open by design" above) — not as a reason to reject otherwise-valid traffic.

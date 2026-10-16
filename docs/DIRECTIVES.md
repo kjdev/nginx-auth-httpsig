@@ -530,6 +530,15 @@ May be declared at most once per nginx instance.
 `hostname` defaults to `127.0.0.1`, `port` to `6379`, `database` to `0`,
 and `connect_timeout` / `command_timeout` to `3s` each.
 
+The connection is synchronous: connecting and each nonce check block the
+worker for up to `connect_timeout` / `command_timeout`, so keep both small.
+Name resolution of `hostname` is not covered by `connect_timeout` and can
+block longer, so give an IP address rather than a DNS name.
+Neither `AUTH` nor TLS is supported: use an instance without `requirepass`
+(a `NOAUTH` reply is treated as the store being unavailable and fails
+open) that is reachable only over a trusted network, and give nonces a
+dedicated `database` or instance with `maxmemory-policy noeviction`.
+
 This directive is parsed and stored regardless of how the module was
 built; choosing `auth_httpsig_nonce_store redis` on a binary built
 without Redis support (see [INSTALL.md](INSTALL.md#build)) is what
