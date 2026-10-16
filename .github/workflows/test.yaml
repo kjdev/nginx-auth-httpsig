@@ -20,7 +20,9 @@ defaults:
 
 jobs:
   # tests/unit/*: no nginx runtime needed, links src/ directly against
-  # jansson/openssl via pkg-config (see tests/unit/Makefile).
+  # jansson/openssl/hiredis via pkg-config (see tests/unit/Makefile).
+  # redis-server is only started by the Redis nonce store test, on a
+  # private port; it is not run as a service.
   unit:
     permissions:
       contents: read
@@ -33,9 +35,11 @@ jobs:
             build-essential \
             ca-certificates \
             curl \
+            libhiredis-dev \
             libjansson-dev \
             libssl-dev \
-            pkg-config
+            pkg-config \
+            redis-server
         env:
           DEBIAN_FRONTEND: noninteractive
       - name: Checkout repository
@@ -49,6 +53,8 @@ jobs:
         run: |
           cd tests/unit
           make test
+        env:
+          NGX_AUTH_HTTPSIG_NONCE_REDIS: 1
     timeout-minutes: 15
 
   # Test::Nginx integration tests (tests/prove/). Matrix covers 2 system
