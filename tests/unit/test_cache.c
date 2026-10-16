@@ -287,7 +287,7 @@ TEST(cache_release_keeps_stale_jwks)
         ngx_auth_httpsig_cache_store(ctx, &host, &jwks, 1100, 100, NULL));
 
     /* Expiry forces a refetch claim, and that refetch fails -- release()
-     * must not touch the still-cached jwks payload (ADR 0015: serve
+     * must not touch the still-cached jwks payload (serve
      * stale on a failed refresh). */
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_cache_lookup(ctx, pool, &host, 1150, &out, &status,
@@ -1015,7 +1015,7 @@ TEST(cache_claim_rotation_refetch_succeeds_and_keeps_jwks)
 
     /* The claim itself must not clobber the still-unexpired jwks: a
      * concurrent request must keep seeing it as a stale-but-served HIT
-     * (ADR 0015) for the length of this in-flight refetch, exactly as
+     * for the length of this in-flight refetch, exactly as
      * it would for an ordinary in-flight refetch (BUSY-with-stale). */
     ASSERT_EQ_INT(NGX_OK,
         ngx_auth_httpsig_cache_lookup(ctx, pool, &host, 1001, &out, &status,

@@ -53,7 +53,7 @@ verified=[1]
 
 
 
-=== TEST 2: a proxy header claiming https does not change @scheme (ADR 0008)
+=== TEST 2: a proxy header claiming https does not change @scheme
 --- http_config
     auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
     auth_httpsig_profile   web-bot-auth;

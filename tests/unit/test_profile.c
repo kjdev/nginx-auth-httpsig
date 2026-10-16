@@ -1200,7 +1200,7 @@ TEST(profile_first_matching_tag_label_wins){
      * sig0 does not match the tag. sig1 matches and is well-formed
      * (the entry that gets signed and must be selected). sig2 also
      * matches the tag but is missing "expires" - it must never be
-     * consulted, since ADR 0009 picks the first matching label.
+     * consulted.
      */
     input_text = fmt(pool,
                      "sig0=(\"@method\");created=%d;expires=%d;keyid=\"%.*s\";"

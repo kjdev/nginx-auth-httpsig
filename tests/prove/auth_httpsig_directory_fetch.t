@@ -700,7 +700,7 @@ _EOC_
 # below: fixed content (never rotated) holding only keyid B (ed25519-key2),
 # while the protected location's auth_httpsig_jwks_file holds keyid A
 # (ed25519-key, see $RotateFile2/$HttpConfig above). Verifies that a
-# rotation-rescue refetch (ADR 0037) is skipped when the unresolved keyid
+# rotation-rescue refetch is skipped when the unresolved keyid
 # is already covered by the static JWKS instead.
 $HttpConfig .= <<'_EOC_';
     server {
@@ -1373,7 +1373,7 @@ verified:1 error:
 
 
 
-=== TEST 37: a keyid resolved only via the static auth_httpsig_jwks_file does not trigger ADR 0037's rotation-rescue refetch of the dynamic directory
+=== TEST 37: a keyid resolved only via the static auth_httpsig_jwks_file does not trigger the rotation-rescue refetch of the dynamic directory
 --- http_config eval: $::HttpConfig
 --- config eval: $::RotationRescueStaticConfig
 --- more_headers eval
