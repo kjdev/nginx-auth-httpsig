@@ -297,8 +297,7 @@ TEST(nonce_store_shm_check_aborts_when_zone_is_full)
     ASSERT_EQ_INT(key_a.len, key_b.len);
 
     /* Room for exactly one node, so the second insert has nowhere to go
-     * and must fail open (NGX_ABORT) rather than evict -- this store has
-     * no eviction path. */
+     * and must fail open (NGX_ABORT) rather than evict a live node. */
     budget = nonce_store_zone_overhead(TEST_ZONE_NAME)
              + sizeof(ngx_auth_httpsig_nonce_store_node_t) + key_a.len;
 
@@ -309,6 +308,124 @@ TEST(nonce_store_shm_check_aborts_when_zone_is_full)
         ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 60, 1000, NULL));
     ASSERT_EQ_INT(NGX_ABORT,
         ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_b, 60, 1000, NULL));
+
+    nonce_store_free(ctx);
+    return 0;
+}
+
+
+TEST(nonce_store_shm_check_recovers_after_expiry_when_zone_was_full)
+{
+    ngx_auth_httpsig_nonce_store_ctx_t *ctx;
+    ngx_str_t key_a, key_b, key_c;
+    size_t budget;
+
+    key_a = str("auth_httpsig:nonce:aaaaaaaa");
+    key_b = str("auth_httpsig:nonce:bbbbbbbb");
+    key_c = str("auth_httpsig:nonce:cccccccc");
+
+    budget = nonce_store_zone_overhead(TEST_ZONE_NAME)
+             + sizeof(ngx_auth_httpsig_nonce_store_node_t) + key_a.len;
+
+    ctx = nonce_store_new(pool, budget, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 60, 1000, NULL));
+
+    /* expires_at == now is still live: nothing to reclaim yet. */
+    ASSERT_EQ_INT(NGX_ABORT,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_b, 60, 1060, NULL));
+
+    /* One second later key_a has expired and its slot is reclaimed, even
+     * though key_a itself is never looked up again. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_b, 60, 1061, NULL));
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_b, 60, 1062, NULL));
+
+    /* The recovered slot is now held by a live node again. */
+    ASSERT_EQ_INT(NGX_ABORT,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_c, 60, 1062, NULL));
+
+    nonce_store_free(ctx);
+    return 0;
+}
+
+
+TEST(nonce_store_shm_check_reclaim_stops_at_live_head)
+{
+    ngx_auth_httpsig_nonce_store_ctx_t *ctx;
+    ngx_str_t key_a, key_b, key_c, key_d;
+    size_t budget;
+
+    key_a = str("auth_httpsig:nonce:aaaaaaaa");
+    key_b = str("auth_httpsig:nonce:bbbbbbbb");
+    key_c = str("auth_httpsig:nonce:cccccccc");
+    key_d = str("auth_httpsig:nonce:dddddddd");
+
+    budget = nonce_store_zone_overhead(TEST_ZONE_NAME)
+             + 2 * (sizeof(ngx_auth_httpsig_nonce_store_node_t) + key_a.len);
+
+    ctx = nonce_store_new(pool, budget, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    /* key_a (long-lived) heads the queue; key_b (short-lived) is behind it. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 100, 1000, NULL));
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_b, 10, 1000, NULL));
+
+    /* key_b has expired but sits behind a live head, so it is not reclaimed
+     * yet and the zone still reads as full. */
+    ASSERT_EQ_INT(NGX_ABORT,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_c, 10, 1011, NULL));
+
+    /* Once the head expires, both are reclaimed. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_c, 10, 1101, NULL));
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_d, 10, 1101, NULL));
+
+    nonce_store_free(ctx);
+    return 0;
+}
+
+
+TEST(nonce_store_shm_check_expired_reuse_moves_node_to_queue_tail)
+{
+    ngx_auth_httpsig_nonce_store_ctx_t *ctx;
+    ngx_str_t key_a, key_b, key_c;
+    size_t budget;
+
+    key_a = str("auth_httpsig:nonce:aaaaaaaa");
+    key_b = str("auth_httpsig:nonce:bbbbbbbb");
+    key_c = str("auth_httpsig:nonce:cccccccc");
+
+    budget = nonce_store_zone_overhead(TEST_ZONE_NAME)
+             + 2 * (sizeof(ngx_auth_httpsig_nonce_store_node_t) + key_a.len);
+
+    ctx = nonce_store_new(pool, budget, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 10, 1000, NULL));
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_b, 100, 1000, NULL));
+
+    /* key_a expired and is reused with a long TTL; it must move behind
+     * key_b, otherwise the head would be a live node with a later one
+     * expired behind it. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 200, 1011, NULL));
+
+    /* Head is now key_b (expires 1100); at 1101 it is reclaimed. */
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_c, 10, 1101, NULL));
+
+    /* key_a (expires 1211) is still live. */
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key_a, 10, 1101, NULL));
 
     nonce_store_free(ctx);
     return 0;
@@ -352,5 +469,8 @@ TEST_SUITE(nonce_store)
     RUN(nonce_store_shm_check_ok_one_second_past_expiry_boundary);
     RUN(nonce_store_shm_check_ok_on_expired_reuse);
     RUN(nonce_store_shm_check_aborts_when_zone_is_full);
+    RUN(nonce_store_shm_check_recovers_after_expiry_when_zone_was_full);
+    RUN(nonce_store_shm_check_reclaim_stops_at_live_head);
+    RUN(nonce_store_shm_check_expired_reuse_moves_node_to_queue_tail);
     RUN(nonce_store_shm_check_rejects_bad_args);
 }

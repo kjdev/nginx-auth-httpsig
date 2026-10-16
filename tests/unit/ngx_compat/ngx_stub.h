@@ -53,6 +53,7 @@ typedef intptr_t ngx_msec_t;
 #define ngx_max(val1, val2)  ((val1 < val2) ? (val2) : (val1))
 
 #include "ngx_rbtree.h"
+#include "ngx_queue.h"
 
 
 /* --- ngx_str_t --- */

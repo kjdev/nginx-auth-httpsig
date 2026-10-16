@@ -46,6 +46,7 @@ HDRS = test.h \
        ngx_compat/ngx_core.h \
        ngx_compat/ngx_stub.h \
        ngx_compat/ngx_rbtree.h \
+       ngx_compat/ngx_queue.h \
        ../../src/ngx_auth_httpsig_sfv.h \
        ../../src/ngx_auth_httpsig_str.h \
        ../../src/ngx_auth_httpsig_base.h \
