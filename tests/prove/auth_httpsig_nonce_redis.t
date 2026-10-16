@@ -125,3 +125,89 @@ verified=[1] error=[nonce_store_unavailable]
 --- must_die
 --- error_log eval
 qr/auth_httpsig: invalid hostname value "hostname="/
+
+
+
+=== TEST 4: an unreachable Redis is rejected with 503 under nonce_store_failure closed
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_redis hostname=127.0.0.1 port=1 connect_timeout=1 command_timeout=1;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        auth_httpsig_nonce_store redis;
+        auth_httpsig_nonce_store_failure closed;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+        ['nonce',   'redis-closed-nonce-1', 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n"
+--- request
+GET /t
+--- error_code: 503
+
+
+
+=== TEST 5: nonce_store_failure closed reports verified=0 in observe mode
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_redis hostname=127.0.0.1 port=1 connect_timeout=1 command_timeout=1;
+--- config
+    location /t {
+        auth_httpsig_mode observe;
+        auth_httpsig_nonce_store redis;
+        auth_httpsig_nonce_store_failure closed;
+        return 200 "verified=[$httpsig_verified] error=[$httpsig_error]";
+    }
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+        ['nonce',   'redis-closed-nonce-2', 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n"
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified=[0] error=[nonce_store_unavailable]
