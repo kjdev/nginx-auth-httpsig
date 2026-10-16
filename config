@@ -43,7 +43,7 @@ fi
 
 # --- optional: redis nonce store backend ---
 # Opt-in only: set NGX_AUTH_HTTPSIG_NONCE_REDIS before ./configure to link
-# hiredis and enable "auth_httpsig_nonce_store redis" (ADR 0052). Without
+# hiredis and enable "auth_httpsig_nonce_store redis". Without
 # it, ngx_auth_httpsig_nonce_store.c still builds (its redis-specific code
 # is compiled out via NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS), and selecting
 # "redis" at config time is an EMERG startup error instead.
