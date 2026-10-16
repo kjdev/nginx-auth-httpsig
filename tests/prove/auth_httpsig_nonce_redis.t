@@ -211,3 +211,54 @@ GET /t
 --- error_code: 200
 --- response_body chomp
 verified=[0] error=[nonce_store_unavailable]
+
+
+
+=== TEST 6: an unresolvable hostname is a configuration error
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_redis hostname=redis.invalid port=6379;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        auth_httpsig_nonce_store redis;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- must_die
+--- error_log eval
+qr/auth_httpsig: failed to resolve redis hostname "redis.invalid"/
+
+
+
+=== TEST 7: a hostname is resolved at configuration time and accepted
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_redis hostname=localhost port=1 backoff_max=5s;
+--- config
+    location /t {
+        auth_httpsig_mode observe;
+        auth_httpsig_nonce_store redis;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- request
+GET /t
+--- error_code: 200
+
+
+
+=== TEST 8: a zero backoff_max is a configuration error
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_redis hostname=127.0.0.1 backoff_max=0;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        auth_httpsig_nonce_store redis;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- must_die
+--- error_log eval
+qr/auth_httpsig: invalid backoff_max value "backoff_max=0"/

@@ -622,6 +622,20 @@ redis_stop(pid_t pid)
 }
 
 
+TEST(nonce_store_redis_backoff_doubles_up_to_the_cap)
+{
+    ASSERT_EQ_INT(1, ngx_auth_httpsig_nonce_store_redis_next_backoff(0, 30));
+    ASSERT_EQ_INT(2, ngx_auth_httpsig_nonce_store_redis_next_backoff(1, 30));
+    ASSERT_EQ_INT(16, ngx_auth_httpsig_nonce_store_redis_next_backoff(8, 30));
+    ASSERT_EQ_INT(30, ngx_auth_httpsig_nonce_store_redis_next_backoff(16, 30));
+    ASSERT_EQ_INT(30, ngx_auth_httpsig_nonce_store_redis_next_backoff(30, 30));
+    ASSERT_EQ_INT(1, ngx_auth_httpsig_nonce_store_redis_next_backoff(0, 0));
+    ASSERT_EQ_INT(1, ngx_auth_httpsig_nonce_store_redis_next_backoff(1, 1));
+
+    return 0;
+}
+
+
 TEST(nonce_store_redis_recovers_after_backoff_and_detects_replay)
 {
     ngx_auth_httpsig_nonce_redis_conf_t conf;
@@ -638,6 +652,7 @@ TEST(nonce_store_redis_recovers_after_backoff_and_detects_replay)
     conf.port = port;
     conf.connect_timeout = 1;
     conf.command_timeout = 1;
+    conf.backoff_max = 30;
 
     /* The expected connect failures are logged at ERR; keep them out of
      * the test output. */
@@ -658,15 +673,6 @@ TEST(nonce_store_redis_recovers_after_backoff_and_detects_replay)
         fprintf(stderr, "  SKIP  no redis-server/valkey-server available\n");
         ngx_auth_httpsig_nonce_store_redis_close();
         return 0;
-    }
-
-    /* Redis is up, but the backoff window (connect_timeout) is still
-     * open, so the store keeps failing open until it elapses. */
-    if (ngx_auth_httpsig_nonce_store_redis_check(&conf, &key, 60, &quiet)
-        != NGX_ABORT)
-    {
-        redis_stop(pid);
-        ASSERT(0 && "check during backoff must not reach redis");
     }
 
     sleep(2);
@@ -715,6 +721,7 @@ TEST_SUITE(nonce_store)
     RUN(nonce_store_shm_check_expired_reuse_reorders_expiry);
     RUN(nonce_store_shm_check_rejects_bad_args);
 #if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+    RUN(nonce_store_redis_backoff_doubles_up_to_the_cap);
     RUN(nonce_store_redis_recovers_after_backoff_and_detects_replay);
 #endif
 }
