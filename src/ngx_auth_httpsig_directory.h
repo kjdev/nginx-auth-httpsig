@@ -57,8 +57,8 @@ typedef enum {
  * (auth_httpsig_agent_allow, or a Signature-Agent host already
  * extracted from a URL) for
  * allow-list matching: lowercases it and strips a trailing ":443",
- * since the default HTTPS port carries no matching information (ADR
- * 0012 pins this fetch path to HTTPS).
+ * since the default HTTPS port carries no matching information (this
+ * fetch path is HTTPS-only).
  *
  * Rejects, rather than silently ignoring, anything that is not a bare
  * host[:port]: a "://" scheme, a path/query/fragment/userinfo
@@ -66,7 +66,7 @@ typedef enum {
  * parts here would let an operator write an allow-list entry that
  * looks like it restricts more than it does; this function's whole job
  * is to be the SSRF gate's normalization step, so ambiguity here is a
- * security bug, not a convenience. See tasks/adr/0013-*.md.
+ * security bug, not a convenience.
  *
  * Return value:
  *   NGX_OK     `*out` holds the normalized host, allocated from `pool`.
@@ -104,7 +104,7 @@ void ngx_auth_httpsig_directory_hostname(const ngx_str_t *host,
  * Reports whether `host` (already normalized) exactly matches an entry
  * in `allow` (an ngx_array_t of normalized ngx_str_t, as produced by
  * the auth_httpsig_agent_allow directive). No wildcard, prefix,
- * or suffix matching -- exact match only, by design (ADR 0013.2).
+ * or suffix matching -- exact match only, by design.
  *
  * Returns 0 if `allow` is NULL or empty, or `host` is NULL.
  */
@@ -119,7 +119,7 @@ ngx_flag_t ngx_auth_httpsig_directory_allowed(const ngx_array_t *allow,
  * "no-cache", "private", and an absent/unparseable max-age/s-maxage all
  * derive a pre-clamp TTL of 0 -- they collapse into the same "trust
  * nothing, apply the floor" path, since min_ttl is a floor regardless
- * of what the origin claims, not a signal to skip caching (ADR 0014.2).
+ * of what the origin claims, not a signal to skip caching.
  * "s-maxage" takes priority over "max-age" when both are present.
  * `age` (0 if unknown) is subtracted from the derived value before
  * clamping.
@@ -134,7 +134,7 @@ time_t ngx_auth_httpsig_directory_ttl(const ngx_str_t *cache_control,
 
 /*
  * Checks a fetched key-directory response against the acceptance
- * rules: HTTPS only (ADR 0012), no redirect followed (a 3xx is an
+ * rules: HTTPS only, no redirect followed (a 3xx is an
  * explicit rejection, not a transport failure), 200 status only,
  * Content-Type matches `media_type` or "application/json" (ignoring
  * a ";charset=..." suffix and case), and the body is non-empty and

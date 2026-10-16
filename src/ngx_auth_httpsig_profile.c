@@ -263,8 +263,8 @@ ngx_auth_httpsig_profile_verify(ngx_pool_t *pool,
 
     /* Step 10: if the request carries Signature-Agent, it must be
      * covered, when the profile requires it. Collected as separate
-     * lines, not joined, so the later host extraction can apply ADR
-     * 0022's per-line resolution. */
+     * lines, not joined, so the later host extraction can apply
+     * the per-line resolution. */
     if (ngx_auth_httpsig_profile_collect(pool, req, &signature_agent_name,
                                          &agent_raws)
         != NGX_OK)
@@ -536,7 +536,7 @@ ngx_auth_httpsig_profile_select_label(ngx_pool_t *pool,
 /* Collects every occurrence of `name` (in receipt order) out of
  * `req->headers`, unjoined -- unlike
  * ngx_auth_httpsig_base_field_value(), which combines them with ", ".
- * Signature-Agent must be walked line by line (ADR 0022), so its
+ * Signature-Agent must be walked line by line, so its
  * caller needs the individual values, not a folded string. */
 static ngx_int_t
 ngx_auth_httpsig_profile_collect(ngx_pool_t *pool,
@@ -763,7 +763,7 @@ ngx_auth_httpsig_profile_agent_entry(
  * Signature-Agent is carried as a Dictionary per the current
  * web-bot-auth draft, and as a bare sf-string Item in earlier
  * revisions still seen in real crawler traffic. Resolves `raws` (its
- * header lines, in receipt order, unjoined per ADR 0022) to the
+ * header lines, in receipt order, unjoined) to the
  * https URL it carries, trying each line as: a Dictionary (label
  * match preferred, else first type-ok entry, across all lines), then
  * an sf-string Item, then the raw field bytes unchanged. A line that

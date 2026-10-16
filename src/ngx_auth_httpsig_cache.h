@@ -93,7 +93,7 @@ ngx_int_t ngx_auth_httpsig_cache_init_zone(ngx_shm_zone_t *shm_zone,
  * `generation` (may be NULL) receives the zone-wide generation number
  * that produced the returned jwks. It is set to a non-zero value only
  * for NGX_AUTH_HTTPSIG_CACHE_HIT; every other status writes 0. Callers
- * that keep a worker-local cache keyed on this number (ADR 0020) must
+ * that keep a worker-local cache keyed on this number must
  * not treat 0 as a valid generation.
  *
  * Return value: NGX_OK with `*status` set, or NGX_ERROR (a required
@@ -123,13 +123,13 @@ ngx_int_t ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
  * Claims a rate-limited, out-of-band fetch right for `host` after
  * _lookup() already reported NGX_AUTH_HTTPSIG_CACHE_HIT but the caller
  * determined the cached jwks does not cover a keyid the client
- * presented (a key-rotation signal, ADR 0037). Unlike the CLAIMED
+ * presented (a key-rotation signal). Unlike the CLAIMED
  * status from _lookup(), this does not create a node: `host` must
  * already have one.
  *
  * The existing `jwks` is left untouched by the claim itself, so a caller
  * that ends up not calling _store() (via _release()) keeps serving the
- * stale-but-valid jwks (ADR 0015). `expires_at` is left untouched too,
+ * stale-but-valid jwks. `expires_at` is left untouched too,
  * but _release() unconditionally rewrites it to its own `retry_at`
  * argument regardless of how much of the node's original TTL remained,
  * same as it does after an ordinary failed refetch.
@@ -162,7 +162,7 @@ ngx_int_t ngx_auth_httpsig_cache_claim_rotation_refetch(
  * If the node already exists but the shared zone has no room for the
  * jwks bytes, the fetch right is released as if by _release(), using
  * `now + retry_ttl` as the new expiry: this keeps serving any prior
- * jwks (ADR 0015) while backing off retries to once per `retry_ttl`
+ * jwks while backing off retries to once per `retry_ttl`
  * instead of once per request until the zone frees up room.
  */
 ngx_int_t ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
@@ -171,7 +171,7 @@ ngx_int_t ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
 
 /*
  * Releases `host`'s fetch right after a failed fetch, without touching
- * any previously cached jwks (ADR 0015: keep serving a stale key set
+ * any previously cached jwks (keep serving a stale key set
  * across a failed refetch). `retry_at` becomes the new expiry, so a
  * lookup before then reports NGX_AUTH_HTTPSIG_CACHE_NEGATIVE if there is
  * no prior jwks, or NGX_AUTH_HTTPSIG_CACHE_HIT with the stale jwks

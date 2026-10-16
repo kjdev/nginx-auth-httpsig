@@ -317,7 +317,7 @@ ngx_auth_httpsig_cache_lookup(ngx_auth_httpsig_cache_ctx_t *ctx,
         && now - cn->fetching_since < NGX_AUTH_HTTPSIG_CACHE_FETCH_TIMEOUT)
     {
         /* The node's jwks is whatever the last successful fetch left
-         * behind (possibly from before this expiry, ADR 0015's "keep
+         * behind (possibly from before this expiry, the "keep
          * serving stale" already applies to release()'s backoff window;
          * this extends the same tolerance to the in-flight refetch
          * window instead of leaving concurrent requests without a
@@ -451,7 +451,7 @@ ngx_auth_httpsig_cache_store(ngx_auth_httpsig_cache_ctx_t *ctx,
          * only to fail the same slab allocation again -- a fetch per
          * request until the zone frees up room. Back off like a failed
          * fetch would (_release()), while any prior jwks on this node
-         * keeps serving as a HIT (ADR 0015). */
+         * keeps serving as a HIT. */
         cn->fetching = 0;
         cn->expires_at = ngx_time() + retry_ttl;
 

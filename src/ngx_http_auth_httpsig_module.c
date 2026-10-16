@@ -93,8 +93,7 @@ typedef struct {
                                                  * enforce" or
                                                  * "auth_httpsig_require"
                                                  * is set anywhere in the
-                                                 * whole config (ADR
-                                                 * 0035) */
+                                                 * whole config */
     ngx_auth_httpsig_keys_cache_t *local_keys;  /* NULL unless dynamic */
 
     ngx_uint_t                     nonce_store_backend; /* the single backend selected by
@@ -534,8 +533,8 @@ ngx_http_auth_httpsig_add_variables(ngx_conf_t *cf)
  * location, so this cannot be scoped to only the locations that declare
  * "auth_httpsig_agent_allow". Instead, the whole config is checked
  * once here: if no location anywhere enabled dynamic key fetching, the
- * handler is never registered and static-JWKS-only configs pay nothing
- * (ADR 0013). Once registered, every request pays one indirect call plus
+ * handler is never registered and static-JWKS-only configs pay nothing.
+ * Once registered, every request pays one indirect call plus
  * the r != r->main / directory.enabled checks inside the handler.
  */
 static ngx_int_t
@@ -731,8 +730,8 @@ ngx_http_auth_httpsig_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     /* Override, not accumulate: a block that declares its own
      * "auth_httpsig_agent_allow" (including "off") discards
-     * whatever the parent inherited, rather than adding to it (ADR
-     * 0013). */
+     * whatever the parent inherited, rather than adding to it.
+     */
     declared = (conf->directory.allow != NULL);
 
     if (!declared) {
@@ -1112,7 +1111,7 @@ ngx_http_auth_httpsig_arg_is_off(const ngx_str_t *value)
 /*
  * "off" is a single-argument form that allocates an empty array to mean
  * "explicitly discard whatever the parent block would otherwise
- * inherit" (ADR 0013); it must not be mixed with hostnames, either as
+ * inherit"; it must not be mixed with hostnames, either as
  * arguments to one invocation or across repeated invocations in the
  * same block, since either combination as a boolean is deceptive: a
  * host list with an "off" in it either allowed those hosts (surprising)
@@ -1547,7 +1546,7 @@ ngx_http_auth_httpsig_find_header(ngx_list_t *list, const char *name,
  * fetch handler, which needs the individual lines: the former to pick
  * a profile-tagged label the same way
  * ngx_auth_httpsig_profile_select_label() does, the latter because
- * ADR 0022 requires walking Signature-Agent line by line rather than
+ * Signature-Agent must be walked line by line rather than
  * combining lines before parsing.
  */
 static ngx_int_t
@@ -1623,8 +1622,7 @@ ngx_http_auth_httpsig_collect_header(ngx_pool_t *pool, ngx_list_t *list,
  * redefined via "map" (nginx rejects it as a "duplicate" variable), so an
  * operator behind a TLS-terminating load balancer points this at a
  * "map"-defined variable instead; the trust-boundary decision of which
- * proxy header to believe stays in that "map", not in this module (ADR
- * 0008).
+ * proxy header to believe stays in that "map", not in this module.
  */
 static ngx_int_t
 ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
@@ -1826,7 +1824,7 @@ ngx_http_auth_httpsig_build_request(ngx_http_request_t *r,
  * (so the phase engine does not re-enter this handler), then declines.
  *
  * ctx->jwks is normally still empty here, but a rotation-triggered claim
- * (ADR 0037) already set it to the stale-but-valid jwks from the HIT that
+ * already set it to the stale-but-valid jwks from the HIT that
  * preceded it before falling through to the claimed-fetch path; if that
  * claim then fails to reach cache_store()/_release() (pool cleanup or
  * subrequest setup failure), keys_unavailable must not clobber a jwks the
@@ -1889,7 +1887,7 @@ ngx_http_auth_httpsig_directory_fail_open_release(
  * request here -- evaluate() itself never causes a 500 -- but
  * ctx->internal_error records the distinction so
  * ngx_http_auth_httpsig_access_handler() can escalate to 500 under
- * "enforce" (ADR 0038) instead of silently treating them as "not
+ * "enforce" instead of silently treating them as "not
  * signed".
  */
 /*
@@ -2005,7 +2003,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
     if (rc == NGX_DECLINED) {
         /* No Signature-Input label tagged for this profile: the fetch
          * would only ever serve a signature this installation does
-         * not verify (ADR 0013's "fetch only for what we verify"),
+         * not verify ("fetch only for what we verify"),
          * and ngx_auth_httpsig_profile_verify() will independently
          * reach the same NOT_SIGNED outcome later. */
         ctx->directory_done = 1;
@@ -2047,11 +2045,11 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
 
         if (keyid.len > 0) {
             /* This call parses jwks into the worker-local cache keyed on
-             * ctx->directory_generation (ADR 0020), so evaluate()'s later
+             * ctx->directory_generation, so evaluate()'s later
              * resolve_keys() call is a cache hit rather than a second
              * parse. Calling it here, rather than deferring to
              * evaluate(), is what lets this HIT branch check keyid
-             * coverage before deciding whether ADR 0037's rotation
+             * coverage before deciding whether the rotation
              * refetch applies. */
             keys = ngx_http_auth_httpsig_resolve_keys(r, ctx);
 
@@ -2062,7 +2060,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
             {
                 /* keyid matches nothing in the cached directory
                  * under either lookup, and nothing in the static
-                 * JWKS either: ADR 0037's rotation signal. (No
+                 * JWKS either: the rotation signal. (No
                  * kid-fallback check against the static JWKS: it
                  * is keyed by thumbprint only, same as the
                  * kid_fallback_keys scoping in evaluate().) Try to
@@ -2091,7 +2089,7 @@ ngx_http_auth_httpsig_directory_handler(ngx_http_request_t *r)
             /* Another worker is already refetching; verifying against
              * the stale jwks this node held before expiry avoids a
              * fail-open window of a fetch RTT on every TTL boundary
-             * (ADR 0015 already accepts stale jwks across a failed
+             * (stale jwks is already accepted across a failed
              * refetch, so tolerating it across an in-flight one too
              * does not introduce a new risk). */
             ctx->jwks = jwks;
@@ -2336,7 +2334,7 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
     if (accepted) {
         /* Held in a local until the parse below confirms the document
          * is well-formed: ctx->jwks may already hold a stale-but-valid
-         * jwks from a rotation-triggered refetch (ADR 0037), and a
+         * jwks from a rotation-triggered refetch, and a
          * failed fetch must leave that in place rather than clobber it
          * with a partial or NULL buffer. */
         new_jwks.data = ngx_pnalloc(sr->parent->pool, body.len);
@@ -2381,7 +2379,7 @@ ngx_http_auth_httpsig_directory_done(ngx_http_request_t *sr, void *data,
 
     if (!accepted) {
         /* ctx->jwks is untouched above on failure, so a rotation-
-         * triggered refetch (ADR 0037) that fails still leaves the
+         * triggered refetch that fails still leaves the
          * prior stale-but-valid jwks in place; only flag key
          * unavailability when there was never anything to fall back
          * to. */
@@ -2796,7 +2794,7 @@ ngx_http_auth_httpsig_evaluate(ngx_http_request_t *r,
 
 
 /*
- * ADR 0040's clamp: with "satisfy any", ngx_http_core_access_phase()
+ * Clamp: with "satisfy any", ngx_http_core_access_phase()
  * only feeds 403/401 back into its OR aggregation -- any other code
  * finalizes the request immediately, bypassing "satisfy" entirely.
  * Callers never pass the fixed internal-error 500 here (the handler
@@ -2825,7 +2823,7 @@ ngx_http_auth_httpsig_deny_code(ngx_http_request_t *r, ngx_uint_t code)
 
 
 /*
- * ADR 0040's OK/DECLINED contract: NGX_OK is returned only for
+ * OK/DECLINED contract: NGX_OK is returned only for
  * RESULT_OK (cryptographically verified), never merely because
  * "require" is satisfied or "mode" is enforce -- "satisfy any" treats
  * NGX_OK as an unconditional pass that skips every other access
@@ -2839,15 +2837,15 @@ ngx_http_auth_httpsig_deny_code(ngx_http_request_t *r, ngx_uint_t code)
  * happens on pool allocation failure) is checked ahead of
  * ctx->result: evaluate() leaves ctx->result at NOT_SIGNED for both,
  * which would otherwise be misread as "not signed" and, under
- * "require", turned into a 403 instead of the 500 ADR 0038 requires
+ * "require", turned into a 403 instead of the 500 required
  * for internal errors. In "observe" mode (reachable here only via
  * "require on"), an internal error still cannot be attributed to the
  * client, so it declines rather than escalating to 500 -- "observe"
  * never turns a verification outcome into a denial.
  *
  * evaluate() only returns NGX_OK with *out left NULL when the
- * effective mode is off; ADR 0039 makes "require on" with effective
- * mode off a startup error, so the guard above guarantees ctx is
+ * effective mode is off; "require on" with effective
+ * mode off is a startup error, so the guard above guarantees ctx is
  * non-NULL whenever evaluate() reports NGX_OK here.
  */
 static ngx_int_t
@@ -3046,7 +3044,7 @@ ngx_http_auth_httpsig_variable_directory_hostname(ngx_http_request_t *r,
 
 /*
  * A single lowercase token, distinct from $httpsig_verified (which stays
- * pinned to "1"/"0"/unset for fail-open compatibility, ADR 0016):
+ * pinned to "1"/"0"/unset for fail-open compatibility):
  * internal errors and directory-fetch failures both leave ctx->result at
  * NOT_SIGNED or KEY_UNAVAILABLE, so this reads ctx->internal_error and
  * ctx->directory_reason to recover the finer-grained reason.

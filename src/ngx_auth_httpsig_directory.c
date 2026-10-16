@@ -135,8 +135,8 @@ ngx_auth_httpsig_directory_normalize_host(ngx_pool_t *pool,
 
     out->len = len;
 
-    /* The default HTTPS port carries no matching information (ADR
-     * 0012 pins this fetch path to HTTPS); ":8443" and other
+    /* The default HTTPS port carries no matching information (this
+     * fetch path is HTTPS-only); ":8443" and other
      * non-default ports are left intact. */
     if (out->len > 4 && ngx_memcmp(out->data + out->len - 4, ":443", 4) == 0) {
         out->len -= 4;
@@ -327,8 +327,8 @@ ngx_auth_httpsig_directory_ttl(const ngx_str_t *cache_control, time_t age,
 
     /* no-store/no-cache/private and an absent/unparseable max-age all
      * derive the same pre-clamp value: min_ttl is a floor regardless
-     * of what the origin claims, not a signal to skip caching (ADR
-     * 0014.2), so there is nothing to distinguish here. */
+     * of what the origin claims, not a signal to skip caching,
+     * so there is nothing to distinguish here. */
     derived = 0;
 
     if (have_maxage) {

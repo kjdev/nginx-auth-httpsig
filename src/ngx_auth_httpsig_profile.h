@@ -197,12 +197,12 @@ ngx_int_t ngx_auth_httpsig_profile_select_label(ngx_pool_t *pool,
 /*
  * Extracts the lowercased host (no port) of a Signature-Agent field,
  * leaving `out` empty unless a usable https URL is found. `raws` are
- * the field's header lines, in receipt order, unjoined (ADR 0022):
+ * the field's header lines, in receipt order, unjoined:
  * each line is tried as a Dictionary, then a bare sf-string Item,
  * then raw bytes. `label` (may be NULL / empty) is the Signature-Input
  * label the caller is about to verify against; a Dictionary entry
  * keyed the same is preferred over the first usable entry, across all
- * lines (ADR 0023). Exposed so $httpsig_agent can be derived from an
+ * lines. Exposed so $httpsig_agent can be derived from an
  * as-yet-unverified Signature-Agent value, before signature
  * verification has run.
  */
