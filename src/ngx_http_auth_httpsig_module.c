@@ -1210,61 +1210,52 @@ ngx_http_auth_httpsig_set_key_directory_request(ngx_conf_t *cf,
 
 
 /*
- * "<name>:<size>" follows the same syntax and 8-page floor as
- * limit_req_zone's "zone=" parameter; zone-name collisions across
- * "auth_httpsig_key_cache_zone" and other modules' shared-memory zones
- * are already caught by ngx_shared_memory_add(), so no separate check is
- * needed here.
+ * Shared by "auth_httpsig_key_cache_zone" and "auth_httpsig_nonce_store_zone":
+ * both take "<name>:<size>" with an 8-page floor and register a zone under
+ * this module's tag.
  */
-static char *
-ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf, ngx_command_t *cmd,
-    void *conf)
+static ngx_shm_zone_t *
+ngx_http_auth_httpsig_add_zone(ngx_conf_t *cf, ngx_str_t *arg,
+    ngx_shm_zone_init_pt init, size_t ctx_size)
 {
-    ngx_http_auth_httpsig_main_conf_t *mcf = conf;
     u_char *p;
     ssize_t size;
-    ngx_str_t *value, name, s;
+    ngx_str_t name, s;
     ngx_shm_zone_t *shm_zone;
 
-    if (mcf->shm_zone) {
-        return "is duplicate";
-    }
-
-    value = cf->args->elts;
-
-    p = (u_char *) ngx_strchr(value[1].data, ':');
+    p = (u_char *) ngx_strchr(arg->data, ':');
     if (p == NULL) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "auth_httpsig: invalid zone size \"%V\"",
-                           &value[1]);
-        return NGX_CONF_ERROR;
+                           arg);
+        return NULL;
     }
 
-    name.data = value[1].data;
+    name.data = arg->data;
     name.len = p - name.data;
 
     s.data = p + 1;
-    s.len = value[1].data + value[1].len - s.data;
+    s.len = arg->data + arg->len - s.data;
 
     size = ngx_parse_size(&s);
     if (size == NGX_ERROR) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "auth_httpsig: invalid zone size \"%V\"",
-                           &value[1]);
-        return NGX_CONF_ERROR;
+                           arg);
+        return NULL;
     }
 
     if (size < (ssize_t) (8 * ngx_pagesize)) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "auth_httpsig: zone \"%V\" is too small",
-                           &value[1]);
-        return NGX_CONF_ERROR;
+                           arg);
+        return NULL;
     }
 
     shm_zone = ngx_shared_memory_add(cf, &name, size,
                                      &ngx_http_auth_httpsig_module);
     if (shm_zone == NULL) {
-        return NGX_CONF_ERROR;
+        return NULL;
     }
 
     /* ngx_shared_memory_add() only rejects name collisions against a
@@ -1276,18 +1267,46 @@ ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf, ngx_command_t *cmd,
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "auth_httpsig: shared memory zone \"%V\" is "
                            "already used by another directive", &name);
-        return NGX_CONF_ERROR;
+        return NULL;
     }
 
-    shm_zone->init = ngx_auth_httpsig_cache_init_zone;
+    shm_zone->init = init;
 
-    shm_zone->data = ngx_pcalloc(cf->pool,
-                                 sizeof(ngx_auth_httpsig_cache_ctx_t));
+    shm_zone->data = ngx_pcalloc(cf->pool, ctx_size);
     if (shm_zone->data == NULL) {
-        return NGX_CONF_ERROR;
+        return NULL;
     }
 
-    mcf->shm_zone = shm_zone;
+    return shm_zone;
+}
+
+
+
+
+/*
+ * "<name>:<size>" follows the same syntax and 8-page floor as
+ * limit_req_zone's "zone=" parameter; zone-name collisions across
+ * "auth_httpsig_key_cache_zone" and other modules' shared-memory zones
+ * are already caught by ngx_shared_memory_add(), so no separate check is
+ * needed here.
+ */
+static char *
+ngx_http_auth_httpsig_set_key_cache_zone(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_http_auth_httpsig_main_conf_t *mcf = conf;
+
+    if (mcf->shm_zone) {
+        return "is duplicate";
+    }
+
+    mcf->shm_zone = ngx_http_auth_httpsig_add_zone(
+        cf, &((ngx_str_t *) cf->args->elts)[1],
+        ngx_auth_httpsig_cache_init_zone,
+        sizeof(ngx_auth_httpsig_cache_ctx_t));
+    if (mcf->shm_zone == NULL) {
+        return NGX_CONF_ERROR;
+    }
 
     return NGX_CONF_OK;
 }
@@ -1434,68 +1453,18 @@ ngx_http_auth_httpsig_set_nonce_store_zone(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf)
 {
     ngx_http_auth_httpsig_main_conf_t *mcf = conf;
-    u_char *p;
-    ssize_t size;
-    ngx_str_t *value, name, s;
-    ngx_shm_zone_t *shm_zone;
 
     if (mcf->nonce_shm_zone) {
         return "is duplicate";
     }
 
-    value = cf->args->elts;
-
-    p = (u_char *) ngx_strchr(value[1].data, ':');
-    if (p == NULL) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "auth_httpsig: invalid zone size \"%V\"",
-                           &value[1]);
+    mcf->nonce_shm_zone = ngx_http_auth_httpsig_add_zone(
+        cf, &((ngx_str_t *) cf->args->elts)[1],
+        ngx_auth_httpsig_nonce_store_init_zone,
+        sizeof(ngx_auth_httpsig_nonce_store_ctx_t));
+    if (mcf->nonce_shm_zone == NULL) {
         return NGX_CONF_ERROR;
     }
-
-    name.data = value[1].data;
-    name.len = p - name.data;
-
-    s.data = p + 1;
-    s.len = value[1].data + value[1].len - s.data;
-
-    size = ngx_parse_size(&s);
-    if (size == NGX_ERROR) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "auth_httpsig: invalid zone size \"%V\"",
-                           &value[1]);
-        return NGX_CONF_ERROR;
-    }
-
-    if (size < (ssize_t) (8 * ngx_pagesize)) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "auth_httpsig: zone \"%V\" is too small",
-                           &value[1]);
-        return NGX_CONF_ERROR;
-    }
-
-    shm_zone = ngx_shared_memory_add(cf, &name, size,
-                                     &ngx_http_auth_httpsig_module);
-    if (shm_zone == NULL) {
-        return NGX_CONF_ERROR;
-    }
-
-    if (shm_zone->data) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "auth_httpsig: shared memory zone \"%V\" is "
-                           "already used by another directive", &name);
-        return NGX_CONF_ERROR;
-    }
-
-    shm_zone->init = ngx_auth_httpsig_nonce_store_init_zone;
-
-    shm_zone->data = ngx_pcalloc(cf->pool,
-                                 sizeof(ngx_auth_httpsig_nonce_store_ctx_t));
-    if (shm_zone->data == NULL) {
-        return NGX_CONF_ERROR;
-    }
-
-    mcf->nonce_shm_zone = shm_zone;
 
     return NGX_CONF_OK;
 }
