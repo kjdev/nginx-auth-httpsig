@@ -185,6 +185,7 @@ void ngx_strlow(u_char *dst, u_char *src, size_t n);
 /* --- time --- */
 
 time_t ngx_time(void);
+void ngx_time_update(void);
 
 
 /* --- base64 / base64url --- */

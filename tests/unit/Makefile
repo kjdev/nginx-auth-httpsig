@@ -8,6 +8,14 @@ CFLAGS  += $(shell pkg-config --cflags openssl 2>/dev/null)
 LDFLAGS  = $(shell pkg-config --libs jansson)
 LDFLAGS += $(shell pkg-config --libs openssl 2>/dev/null || echo "-lssl -lcrypto")
 
+# Opt-in, like the module build: compiles the Redis nonce store and its
+# tests, which spawn a throwaway redis-server/valkey-server.
+ifneq ($(NGX_AUTH_HTTPSIG_NONCE_REDIS),)
+CFLAGS  += -DNGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS=1
+CFLAGS  += $(shell pkg-config --cflags hiredis)
+LDFLAGS += $(shell pkg-config --libs hiredis)
+endif
+
 SRCS = test_main.c \
        test_sfv.c \
        test_sfv_httpwg.c \

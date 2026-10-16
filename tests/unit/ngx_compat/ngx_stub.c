@@ -319,6 +319,13 @@ ngx_time(void)
 }
 
 
+/* ngx_time() reads the clock directly, so there is no cache to refresh. */
+void
+ngx_time_update(void)
+{
+}
+
+
 static int
 ngx_stub_b64url_char(u_char c)
 {

@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 /*
  * Copyright (c) Tatsuya Kamijo
  * Copyright (c) Bengo4.com, Inc.
@@ -5,9 +7,11 @@
  * test_nonce_store.c - coverage for the SHM nonce store: key generation
  * (NUL-joined, not plain concatenation), TTL derivation, and the
  * SHM rbtree + slab replay check's OK/DECLINED/ABORT/ERROR transitions.
- * The Redis backend is not covered here (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS
- * is not defined for the unit build, so that code is not compiled in);
- * it is covered by tests/prove/auth_httpsig_nonce_redis.t instead.
+ * The Redis backend is compiled in only when NGX_AUTH_HTTPSIG_NONCE_REDIS
+ * is set for the unit build; its tests start a private redis-server (or
+ * valkey-server) on a free loopback port and are skipped when neither
+ * binary is available. Request-level behaviour is covered by
+ * tests/prove/auth_httpsig_nonce_redis.t.
  */
 
 #include <ngx_config.h>
@@ -15,6 +19,16 @@
 
 #include "ngx_auth_httpsig_nonce_store.h"
 #include "test.h"
+
+#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+#endif
 
 
 #define TEST_ZONE_NAME  "test-nonce-zone"
@@ -481,6 +495,203 @@ TEST(nonce_store_shm_check_rejects_bad_args)
 }
 
 
+#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+
+static int
+redis_connectable(int port)
+{
+    struct sockaddr_in addr;
+    int fd, ok;
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return 0;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short) port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    ok = connect(fd, (struct sockaddr *) &addr, sizeof(addr)) == 0;
+    close(fd);
+
+    return ok;
+}
+
+
+/* Binds port 0 to let the kernel pick, then releases it. */
+static int
+redis_free_port(void)
+{
+    struct sockaddr_in addr;
+    socklen_t len;
+    int fd, port;
+
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -1;
+    }
+
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    len = sizeof(addr);
+
+    if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) != 0
+        || getsockname(fd, (struct sockaddr *) &addr, &len) != 0)
+    {
+        close(fd);
+        return -1;
+    }
+
+    port = ntohs(addr.sin_port);
+    close(fd);
+
+    return port;
+}
+
+
+/*
+ * Starts redis-server (falling back to valkey-server) on `port` and
+ * waits until it accepts connections. Returns the child's pid, or -1
+ * when neither binary can be run.
+ */
+static pid_t
+redis_spawn(int port)
+{
+    char portstr[16];
+    struct timespec tick = { 0, 100 * 1000 * 1000 };
+    pid_t pid;
+    int i, status;
+
+    snprintf(portstr, sizeof(portstr), "%d", port);
+
+    pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+
+    if (pid == 0) {
+        if (freopen("/dev/null", "w", stdout) == NULL
+            || freopen("/dev/null", "w", stderr) == NULL)
+        {
+            _exit(127);
+        }
+
+        execlp("redis-server", "redis-server", "--port", portstr,
+               "--bind", "127.0.0.1", "--save", "", "--appendonly", "no",
+               (char *) NULL);
+        execlp("valkey-server", "valkey-server", "--port", portstr,
+               "--bind", "127.0.0.1", "--save", "", "--appendonly", "no",
+               (char *) NULL);
+        _exit(127);
+    }
+
+    for (i = 0; i < 50; i++) {
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            return -1;
+        }
+
+        if (redis_connectable(port)) {
+            return pid;
+        }
+
+        nanosleep(&tick, NULL);
+    }
+
+    kill(pid, SIGKILL);
+    waitpid(pid, &status, 0);
+
+    return -1;
+}
+
+
+static void
+redis_stop(pid_t pid)
+{
+    int status;
+
+    kill(pid, SIGTERM);
+    waitpid(pid, &status, 0);
+}
+
+
+TEST(nonce_store_redis_recovers_after_backoff_and_detects_replay)
+{
+    ngx_auth_httpsig_nonce_redis_conf_t conf;
+    ngx_log_t quiet;
+    ngx_str_t key;
+    pid_t pid;
+    int port;
+
+    port = redis_free_port();
+    ASSERT(port > 0);
+
+    ngx_memzero(&conf, sizeof(conf));
+    conf.hostname = (u_char *) "127.0.0.1";
+    conf.port = port;
+    conf.connect_timeout = 1;
+    conf.command_timeout = 1;
+
+    /* The expected connect failures are logged at ERR; keep them out of
+     * the test output. */
+    ngx_memzero(&quiet, sizeof(quiet));
+    quiet.log_level = NGX_LOG_EMERG;
+
+    key = str("auth_httpsig:nonce:redis-backoff");
+
+    /* Nothing listens yet: the first check fails open and arms the
+     * backoff, and the second is refused without touching the network. */
+    ASSERT_EQ_INT(NGX_ABORT,
+        ngx_auth_httpsig_nonce_store_redis_check(&conf, &key, 60, &quiet));
+    ASSERT_EQ_INT(NGX_ABORT,
+        ngx_auth_httpsig_nonce_store_redis_check(&conf, &key, 60, &quiet));
+
+    pid = redis_spawn(port);
+    if (pid < 0) {
+        fprintf(stderr, "  SKIP  no redis-server/valkey-server available\n");
+        ngx_auth_httpsig_nonce_store_redis_close();
+        return 0;
+    }
+
+    /* Redis is up, but the backoff window (connect_timeout) is still
+     * open, so the store keeps failing open until it elapses. */
+    if (ngx_auth_httpsig_nonce_store_redis_check(&conf, &key, 60, &quiet)
+        != NGX_ABORT)
+    {
+        redis_stop(pid);
+        ASSERT(0 && "check during backoff must not reach redis");
+    }
+
+    sleep(2);
+
+    if (ngx_auth_httpsig_nonce_store_redis_check(&conf, &key, 60, &quiet)
+        != NGX_OK)
+    {
+        ngx_auth_httpsig_nonce_store_redis_close();
+        redis_stop(pid);
+        ASSERT(0 && "check after backoff must recover");
+    }
+
+    if (ngx_auth_httpsig_nonce_store_redis_check(&conf, &key, 60, &quiet)
+        != NGX_DECLINED)
+    {
+        ngx_auth_httpsig_nonce_store_redis_close();
+        redis_stop(pid);
+        ASSERT(0 && "second check of the same key must read as a replay");
+    }
+
+    ngx_auth_httpsig_nonce_store_redis_close();
+    redis_stop(pid);
+
+    return 0;
+}
+
+#endif /* NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS */
+
+
 TEST_SUITE(nonce_store)
 {
     RUN(nonce_store_key_has_expected_prefix_and_length);
@@ -499,4 +710,7 @@ TEST_SUITE(nonce_store)
     RUN(nonce_store_shm_check_reclaim_stops_at_live_head);
     RUN(nonce_store_shm_check_expired_reuse_moves_node_to_queue_tail);
     RUN(nonce_store_shm_check_rejects_bad_args);
+#if (NGX_HAVE_AUTH_HTTPSIG_NONCE_REDIS)
+    RUN(nonce_store_redis_recovers_after_backoff_and_detects_replay);
+#endif
 }
