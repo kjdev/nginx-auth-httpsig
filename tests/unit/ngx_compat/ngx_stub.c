@@ -654,34 +654,6 @@ ngx_stub_slab_destroy(ngx_slab_pool_t *pool)
 }
 
 
-/* --- ngx_crc32_short --- */
-
-static uint32_t ngx_stub_crc32_table16[] = {
-    0x00000000, 0x1db71064, 0x3b6e20c8, 0x26d930ac,
-    0x76dc4190, 0x6b6b51f4, 0x4db26158, 0x5005713c,
-    0xedb88320, 0xf00f9344, 0xd6d6a3e8, 0xcb61b38c,
-    0x9b64c2b0, 0x86d3d2d4, 0xa00ae278, 0xbdbdf21c
-};
-
-
-uint32_t
-ngx_crc32_short(u_char *p, size_t len)
-{
-    u_char c;
-    uint32_t crc;
-
-    crc = 0xffffffff;
-
-    while (len--) {
-        c = *p++;
-        crc = ngx_stub_crc32_table16[(crc ^ (c & 0xf)) & 0xf] ^ (crc >> 4);
-        crc = ngx_stub_crc32_table16[(crc ^ (c >> 4)) & 0xf] ^ (crc >> 4);
-    }
-
-    return crc ^ 0xffffffff;
-}
-
-
 /* --- ngx_crc32_long ---
  *
  * Table verbatim from nginx's src/core/ngx_crc32.c (ngx_crc32_table256):
@@ -770,6 +742,19 @@ ngx_crc32_long(u_char *p, size_t len)
     }
 
     return crc ^ 0xffffffff;
+}
+
+
+/* --- ngx_crc32_short ---
+ *
+ * Same CRC-32 as ngx_crc32_long (nginx's table16 variant only trades the
+ * table size for two lookups per byte), so it delegates.
+ */
+
+uint32_t
+ngx_crc32_short(u_char *p, size_t len)
+{
+    return ngx_crc32_long(p, len);
 }
 
 
