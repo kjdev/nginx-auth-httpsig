@@ -256,3 +256,89 @@ my ($input, $sig) = sign(
 --- must_die
 --- error_log eval
 qr/"auth_httpsig_nonce_required" is "on" but "auth_httpsig_nonce_store" is "off"/
+
+
+
+=== TEST 8: a nonce of exactly 256 bytes is accepted
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_zone httpsig_nonce:1m;
+--- config
+    location /t {
+        auth_httpsig_mode observe;
+        auth_httpsig_nonce_store shm;
+        return 200 "verified=[$httpsig_verified] error=[$httpsig_error]";
+    }
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+        ['nonce',   'n' x 256, 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n"
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified=[1] error=[]
+
+
+
+=== TEST 9: a nonce of 257 bytes is rejected as nonce_too_long
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_zone httpsig_nonce:1m;
+--- config
+    location /t {
+        auth_httpsig_mode observe;
+        auth_httpsig_nonce_store shm;
+        return 200 "verified=[$httpsig_verified] error=[$httpsig_error]";
+    }
+--- more_headers eval
+use HttpSig qw(default_request sign);
+
+my $req = default_request(
+    target  => '/t',
+    headers => [['Signature-Agent', '"https://bot.example.test"']],
+);
+
+my ($input, $sig) = sign(
+    keyfile    => "$ENV{TEST_NGINX_DATA_DIR}/ed25519-key.pem",
+    components => ['@target-uri', '@authority', 'signature-agent'],
+    params     => [
+        ['created', time(),       'integer'],
+        ['expires', time() + 300, 'integer'],
+        ['keyid',   'PdxXhn7dNHVGUgmgckoHmbcG9hsWAnqedH8vCuwIxMA', 'string'],
+        ['tag',     'web-bot-auth', 'string'],
+        ['nonce',   'n' x 257, 'string'],
+    ],
+    req => $req,
+);
+
+"Signature-Agent: \"https://bot.example.test\"\n"
+    . "Signature-Input: $input\n"
+    . "Signature: $sig\n"
+--- request
+GET /t
+--- error_code: 200
+--- response_body chomp
+verified=[0] error=[nonce_too_long]

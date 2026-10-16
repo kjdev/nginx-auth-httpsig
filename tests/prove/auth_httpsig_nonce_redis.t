@@ -108,3 +108,20 @@ GET /t
 --- error_code: 200
 --- response_body chomp
 verified=[1] error=[nonce_store_unavailable]
+
+
+
+=== TEST 3: an empty hostname= value is a configuration error
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_redis hostname= port=6379;
+--- config
+    location /t {
+        auth_httpsig_mode enforce;
+        auth_httpsig_nonce_store redis;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- must_die
+--- error_log eval
+qr/auth_httpsig: invalid hostname value "hostname="/

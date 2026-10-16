@@ -170,6 +170,31 @@ TEST(nonce_store_ttl_floors_zero_and_negative_to_one)
 }
 
 
+TEST(nonce_store_shm_replay_detected_at_expires_plus_max_skew)
+{
+    ngx_auth_httpsig_nonce_store_ctx_t *ctx;
+    ngx_str_t key;
+    time_t ttl;
+
+    key = str("auth_httpsig:nonce:skew-boundary");
+
+    ctx = nonce_store_new(pool, 65536, TEST_ZONE_NAME);
+    ASSERT(ctx != NULL);
+
+    /* now == expires + max_skew: the clamped TTL (1) must still make the
+     * record read as live at this same instant. */
+    ttl = ngx_auth_httpsig_nonce_store_ttl(1000, 20, 1020);
+
+    ASSERT_EQ_INT(NGX_OK,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key, ttl, 1020, NULL));
+    ASSERT_EQ_INT(NGX_DECLINED,
+        ngx_auth_httpsig_nonce_store_shm_check(ctx, &key, ttl, 1020, NULL));
+
+    nonce_store_free(ctx);
+    return 0;
+}
+
+
 TEST(nonce_store_shm_check_ok_on_fresh_key)
 {
     ngx_auth_httpsig_nonce_store_ctx_t *ctx;
@@ -463,6 +488,7 @@ TEST_SUITE(nonce_store)
     RUN(nonce_store_key_rejects_null_args);
     RUN(nonce_store_ttl_computes_expires_plus_skew_minus_now);
     RUN(nonce_store_ttl_floors_zero_and_negative_to_one);
+    RUN(nonce_store_shm_replay_detected_at_expires_plus_max_skew);
     RUN(nonce_store_shm_check_ok_on_fresh_key);
     RUN(nonce_store_shm_check_declined_on_live_replay);
     RUN(nonce_store_shm_check_declined_at_exact_expiry_boundary);
