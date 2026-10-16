@@ -104,3 +104,20 @@ my ($input, $sig) = sign(
 --- request
 GET /t
 --- error_code: 200
+
+
+
+=== TEST 3: an inherited nonce_store does not conflict with a block whose mode is off
+--- http_config
+    auth_httpsig_jwks_file $TEST_NGINX_DATA_DIR/ed25519-jwks.json;
+    auth_httpsig_profile   web-bot-auth;
+    auth_httpsig_nonce_store_zone httpsig_nonce:1m;
+    auth_httpsig_nonce_store shm;
+--- config
+    location /t {
+        auth_httpsig_mode off;
+        alias $TEST_NGINX_DATA_DIR/ok.txt;
+    }
+--- request
+GET /t
+--- error_code: 200
