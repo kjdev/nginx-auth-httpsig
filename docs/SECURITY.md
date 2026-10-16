@@ -88,12 +88,10 @@ Its protection is conditional, not automatic, and has real gaps an operator shou
   `shm` and `redis` cannot be mixed across the configuration, and there is no automatic fallback from one to the other — see `auth_httpsig_nonce_store` in [DIRECTIVES.md](DIRECTIVES.md#replay-prevention).
   `redis` moves the durability/scale tradeoff to a separate service you operate and secure; `shm` keeps everything in-process, at the cost of the fixed-size zone described next.
 - **The `shm` backend reclaims only expired entries.**
-  Each new entry frees up to two expired ones from the oldest end of the insertion order, so the work under the zone's lock is constant per request and the zone recovers by itself once its entries expire (see `auth_httpsig_nonce_store_zone` in [DIRECTIVES.md](DIRECTIVES.md#auth_httpsig_nonce_store_zone)).
+  Entries are also indexed by their expiry time, and each new entry frees up to two expired ones from the earliest-expiring end, so the work under the zone's lock is constant per request and the zone recovers by itself once its entries expire (see `auth_httpsig_nonce_store_zone` in [DIRECTIVES.md](DIRECTIVES.md#auth_httpsig_nonce_store_zone)).
   A live entry is never evicted, because dropping it would let a replay through.
-  If the zone is full of live entries, every new signed request fails open (`$httpsig_error` = `nonce_store_unavailable`) until some of them expire.
-  Reclaim stops at the first live entry in that order, so an expired entry stored behind a longer-lived one is not freed until the older one expires.
-  The signer chooses `expires`, so a single request from a trusted signer with `expires` at the profile's maximum lifetime (up to 24 hours) is enough to hold the head of the order for that long.
-  While it does, no later entry is reclaimed, ordinary traffic alone can fill the zone, and every new signed request then fails open.
+  If the zone is full of live entries, every new signed request fails open (`$httpsig_error` = `nonce_store_unavailable`) until some of them expire, unless `auth_httpsig_nonce_store_failure closed` is set.
+  Because reclaim follows expiry order, a signer's long-lived entry (`expires` up to the profile's maximum lifetime, 24 hours) does not delay reclaim of shorter-lived entries stored after it.
   Size this zone for the peak of nonces stored over the profile's maximum signature lifetime plus `max_skew`, not only for those currently unexpired; monitor for `nonce_store_unavailable` as the signal that it's undersized.
 - **A single valid signer can fill the `shm` zone on purpose.**
   A nonce is stored only after the signature verifies, so an attacker without a trusted signing key cannot fill the zone.
@@ -105,16 +103,20 @@ Its protection is conditional, not automatic, and has real gaps an operator shou
   Use `noeviction`, or give nonces a dedicated Redis instance whose memory is sized for the peak of unexpired nonces.
   With `noeviction`, a full instance answers `OOM` and the check fails open instead.
 - **The Redis connection is synchronous and unauthenticated.**
-  Connecting and every nonce check block the worker for up to `connect_timeout` / `command_timeout`, and resolving a DNS `hostname` is not bounded by `connect_timeout` at all; use an IP address.
+  Connecting and every nonce check block the worker for up to `connect_timeout` / `command_timeout`.
+  A `hostname` is resolved once while the configuration is loaded, so no DNS lookup happens on the request path; if the address changes, reload nginx.
+  After a failure, reconnects back off exponentially (1 second, doubling up to `backoff_max`) and reset on the first successful reply, so a down Redis blocks a worker for roughly one `connect_timeout` per backoff window rather than once per request.
   There is no `AUTH` or TLS support, and an instance with `requirepass` answers `NOAUTH`, which fails open permanently.
   Run it on a trusted network only, ideally on loopback or a private link, and treat anyone who can reach it as able to forge or delete nonce records.
 - **The `shm` store does not survive a restart.**
   A configuration reload re-attaches the zone with its entries intact, but a full stop/start empties it, and so does changing the zone's name or size.
   A signed request captured before that point can be replayed again until its `expires` + `max_skew` passes.
   Use the `redis` backend if replay protection has to outlive an nginx restart.
-- **A store that can't be consulted fails the request open, not closed.**
+- **A store that can't be consulted fails the request open by default.**
   Redis unreachable, or the `shm` zone full, both surface as `$httpsig_error` = `nonce_store_unavailable`, and the request proceeds with its already-successful signature verdict intact (`$httpsig_verified` stays `1`).
   This module treats "can't check for a replay" the same way it treats every other internal condition it can't attribute to the client (see "Fail-open by design" above) — not as a reason to reject otherwise-valid traffic.
+  Set `auth_httpsig_nonce_store_failure closed` to trade availability for replay protection: the request is then treated as unverified (`$httpsig_verified` = `0`) and, under `auth_httpsig_mode enforce`, rejected with 503.
+  Under `satisfy any` that 503 is clamped to 403 like any other status outside 401/403, so another satisfied access check can still let the request through.
 - **An oversized `nonce` is the one exception that is *not* fail-open.**
   A `nonce` over 256 bytes is rejected outright as a failed verification (`$httpsig_error` = `nonce_too_long`), because silently accepting and not storing an unbounded value would let a signer bypass replay detection entirely.
 - **`auth_httpsig_status_replay` only rejects under `auth_httpsig_mode enforce`.**

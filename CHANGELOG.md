@@ -18,8 +18,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 #### Replay prevention
 
 - `auth_httpsig_nonce_store` (`off` / `shm` / `redis`): checks a verified signature's `nonce` against a store and rejects a repeat within the signature's own `created`/`expires` window; `shm` and `redis` are mutually exclusive across the whole configuration, with no automatic fallback between them
-- `auth_httpsig_nonce_store_zone`: shared-memory zone for the `shm` backend, sized by the operator; has no eviction, so a full zone fails open until nginx is restarted
-- `auth_httpsig_nonce_store_redis`: connection parameters (`hostname=`, `port=`, `database=`, `connect_timeout=`, `command_timeout=`) for the `redis` backend, built only when the module is compiled with `NGX_AUTH_HTTPSIG_NONCE_REDIS` (links `hiredis`)
+- `auth_httpsig_nonce_store_zone`: shared-memory zone for the `shm` backend, sized by the operator; expired entries are reclaimed in expiry order, live entries are never evicted, and a zone full of live entries fails open until some of them expire
+- `auth_httpsig_nonce_store_redis`: connection parameters (`hostname=`, `port=`, `database=`, `connect_timeout=`, `command_timeout=`, `backoff_max=`) for the `redis` backend, built only when the module is compiled with `NGX_AUTH_HTTPSIG_NONCE_REDIS` (links `hiredis`)
 - `auth_httpsig_nonce_required`: rejects a verified signature that carries no `nonce` (`$httpsig_error` = `nonce_missing`, denied via `auth_httpsig_status_invalid` under `auth_httpsig_mode enforce`) so a signer cannot opt out of replay prevention by omitting it; requires `auth_httpsig_nonce_store`
 - `nonce_replayed`, `nonce_too_long`, `nonce_store_unavailable` values for `$httpsig_error`: a replay denies only under `auth_httpsig_mode enforce` via `auth_httpsig_status_replay`; an oversized `nonce` (over 256 bytes) is always rejected, not fail-open; an unreachable store fails the request open with its already-successful verdict intact
 
@@ -30,7 +30,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/), and this pro
 ### Known limitations
 
 - Replay prevention only covers signatures that carry a `nonce`; the `web-bot-auth` profile treats `nonce` as optional, so a signer can omit it and bypass replay checking entirely — this cannot be forced from this module's configuration
-- The `shm` nonce store has no eviction; once its zone fills, it stays full (and every subsequent signed request fails open) until nginx is restarted
+- The `shm` nonce store never evicts a live entry; while its zone is full of live entries, every new signed request fails open until some of them expire
 
 ### Dependencies
 

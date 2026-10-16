@@ -29,6 +29,7 @@ See also: [INSTALL](INSTALL.md) · [EXAMPLES](EXAMPLES.md) ·
 | [auth_httpsig_expires_max](#auth_httpsig_expires_max) | http, server, location |
 | [auth_httpsig_max_skew](#auth_httpsig_max_skew) | http, server, location |
 | [auth_httpsig_nonce_store](#auth_httpsig_nonce_store) | http, server, location |
+| [auth_httpsig_nonce_store_failure](#auth_httpsig_nonce_store_failure) | http, server, location |
 | [auth_httpsig_nonce_store_redis](#auth_httpsig_nonce_store_redis) | http |
 | [auth_httpsig_nonce_store_zone](#auth_httpsig_nonce_store_zone) | http |
 | [auth_httpsig_keyid_fallback_allow](#auth_httpsig_keyid_fallback_allow) | http, server, location |
@@ -515,6 +516,27 @@ Redis support (see [INSTALL.md](INSTALL.md#build)).
 nginx refuses to start otherwise.
 There is no automatic fallback between backends.
 
+### auth_httpsig_nonce_store_failure
+
+```text
+Syntax:  auth_httpsig_nonce_store_failure open | closed;
+Default: auth_httpsig_nonce_store_failure open;
+Context: http, server, location
+```
+
+Decides what happens when the nonce store cannot be consulted
+(Redis unreachable, or the `shm` zone full).
+`open` lets the request proceed with its already-successful signature
+verdict (`$httpsig_verified` = `1`); `$httpsig_error` is
+`nonce_store_unavailable`.
+`closed` treats the request as unverified (`$httpsig_verified` = `0`,
+`$httpsig_error` = `nonce_store_unavailable`) and, under
+`auth_httpsig_mode enforce`, rejects it with 503.
+The status is fixed and not configurable, since a store outage is not
+the signer's fault.
+Under `satisfy any`, a 503 is clamped to 403 like any other status
+outside 401/403.
+
 ### auth_httpsig_nonce_required
 
 ```text
@@ -541,7 +563,8 @@ Like every other verification failure, the rejection applies only under
 Syntax:  auth_httpsig_nonce_store_redis [hostname=name] [port=number]
                                         [database=number]
                                         [connect_timeout=time]
-                                        [command_timeout=time];
+                                        [command_timeout=time]
+                                        [backoff_max=time];
 Default: -
 Context: http
 ```
@@ -550,12 +573,24 @@ Configures the single Redis connection used when `auth_httpsig_nonce_store`
 selects `redis` anywhere in the configuration.
 May be declared at most once per nginx instance.
 `hostname` defaults to `127.0.0.1`, `port` to `6379`, `database` to `0`,
-and `connect_timeout` / `command_timeout` to `3s` each.
+`connect_timeout` / `command_timeout` to `3s` each, and `backoff_max` to
+`30s` (`0` is not allowed).
 
 The connection is synchronous: connecting and each nonce check block the
 worker for up to `connect_timeout` / `command_timeout`, so keep both small.
-Name resolution of `hostname` is not covered by `connect_timeout` and can
-block longer, so give an IP address rather than a DNS name.
+A `hostname` is resolved to an IP address once, while the configuration is
+loaded (an unresolvable name is a configuration error), so no DNS lookup
+blocks a worker at request time.
+If the address behind a name changes, reload nginx.
+After a failed connect or command the connection is dropped and further
+signed requests skip Redis (treated as the store being unavailable) for a
+backoff window: 1 second after the first failure, doubling on each
+consecutive failure up to `backoff_max`, reset by the first successful
+reply.
+A single request can block for at most `connect_timeout` +
+`command_timeout`, or twice that when an I/O error forces a reconnect and
+a retry within the same request; with Redis down, a worker blocks roughly
+once per backoff window rather than once per request.
 Neither `AUTH` nor TLS is supported: use an instance without `requirepass`
 (a `NOAUTH` reply is treated as the store being unavailable and fails
 open) that is reachable only over a trusted network, and give nonces a
@@ -583,15 +618,15 @@ same rbtree-plus-slab storage, since the two caches have opposite hit
 semantics: a key-directory cache hit means reuse, while a nonce-store hit
 means reject as a replay.
 
-Expired entries are reclaimed in insertion order: each new entry frees up
-to two expired ones from the oldest end, so the zone recovers on its own
-once its entries expire.
+Expired entries are reclaimed in expiry order: each new entry frees up
+to two expired ones, earliest-expiring first, so the zone recovers on its
+own once its entries expire.
 A live entry is never evicted.
 If the zone is full of live entries, a new entry fails to allocate and the
-request fails open (`$httpsig_error` = `nonce_store_unavailable`).
-Reclaim stops at the first live entry, so one entry with a long `expires`
-(up to the profile's maximum lifetime) delays reclaim of everything stored
-after it until that entry expires.
+request fails open (`$httpsig_error` = `nonce_store_unavailable`), or is
+rejected with 503 under `auth_httpsig_nonce_store_failure closed`.
+An entry with a long `expires` does not delay reclaim of shorter-lived
+entries stored after it.
 Size this zone for the nonces stored over the maximum signature lifetime
 plus `max_skew`, not only for those currently unexpired.
 This is the operator's primary control point; see
@@ -715,5 +750,7 @@ outcome into a rejection (see `auth_httpsig_require` above).
 verified before the nonce check ran, so the request proceeds with that
 successful verdict intact (`$httpsig_verified` = `1`) rather than with no
 verdict at all — see [Replay prevention](#replay-prevention).
+With `auth_httpsig_nonce_store_failure closed` it is instead a rejection:
+`$httpsig_verified` = `0`, and 503 under `auth_httpsig_mode enforce`.
 They exist purely for operational diagnosis (see
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)), not to signal a rejection.
