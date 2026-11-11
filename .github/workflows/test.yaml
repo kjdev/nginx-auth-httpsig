@@ -210,10 +210,10 @@ jobs:
     strategy:
       matrix:
         nginx:
-          - version: alpine
-            label: alpine
-          - version: ubuntu
-            label: ubuntu
+          - version: 'alpine'
+            label: 'alpine'
+          - version: 'ubuntu'
+            label: 'ubuntu'
           - version: '1.30.4'
             label: 'stable'
           - version: '1.31.5'
